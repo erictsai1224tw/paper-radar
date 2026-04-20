@@ -1,6 +1,10 @@
 db.sqlite
+db.sqlite.bak
 summaries.json
 radar.log
+bot.sqlite
+bot.log
+papers_md/
 .env
 __pycache__/
 *.pyc

@@ -151,8 +151,8 @@ def _mk_ctx(tmp_db: Path, **overrides) -> Context:
     def action(chat_id, a):
         fake.actions.append((chat_id, a))
 
-    def ask(text, history, backend, timeout):
-        fake.llm_calls.append((text, backend))
+    def ask(text, history, backend, timeout, **kwargs):
+        fake.llm_calls.append((text, backend, kwargs))
         if fake.llm_error is not None:
             raise fake.llm_error
         return fake.llm_reply
@@ -215,7 +215,7 @@ def test_plain_text_uses_default_backend_and_records_history(tmp_db: Path):
     ctx = _mk_ctx(tmp_db, default_backend="claude")
     ctx._fake.llm_reply = "hi there"
     handle_update(_msg("42", "hello"), ctx)
-    assert ctx._fake.llm_calls == [("hello", "claude")]
+    assert [(c[0], c[1]) for c in ctx._fake.llm_calls] == [("hello", "claude")]
     assert ("42", "typing") in ctx._fake.actions
     hist = get_history(tmp_db, "42", limit=10)
     assert [h["role"] for h in hist] == ["user", "assistant"]
@@ -228,8 +228,8 @@ def test_typing_indicator_pumps_during_slow_llm(tmp_db: Path):
 
     ctx = _mk_ctx(tmp_db, typing_interval=0.02)
 
-    def slow_llm(text, history, backend, timeout):
-        ctx._fake.llm_calls.append((text, backend))
+    def slow_llm(text, history, backend, timeout, **kwargs):
+        ctx._fake.llm_calls.append((text, backend, kwargs))
         _time.sleep(0.1)
         return "ok"
 
@@ -241,7 +241,7 @@ def test_typing_indicator_pumps_during_slow_llm(tmp_db: Path):
 def test_slash_claude_forces_claude_regardless_of_default(tmp_db: Path):
     ctx = _mk_ctx(tmp_db, default_backend="gemini")
     handle_update(_msg("42", "/claude what is rag?"), ctx)
-    assert ctx._fake.llm_calls == [("what is rag?", "claude")]
+    assert [(c[0], c[1]) for c in ctx._fake.llm_calls] == [("what is rag?", "claude")]
     hist = get_history(tmp_db, "42", limit=10)
     assert [h["text"] for h in hist] == ["what is rag?", "llm-reply"]
 
@@ -249,7 +249,7 @@ def test_slash_claude_forces_claude_regardless_of_default(tmp_db: Path):
 def test_slash_gemini_forces_gemini(tmp_db: Path):
     ctx = _mk_ctx(tmp_db, default_backend="claude")
     handle_update(_msg("42", "/gemini solve x"), ctx)
-    assert ctx._fake.llm_calls == [("solve x", "gemini")]
+    assert [(c[0], c[1]) for c in ctx._fake.llm_calls] == [("solve x", "gemini")]
 
 
 def test_bare_slash_claude_returns_help(tmp_db: Path):
@@ -273,6 +273,60 @@ def test_update_without_text_is_ignored(tmp_db: Path):
     handle_update({"update_id": 1, "message": {"chat": {"id": 42}}}, ctx)
     assert ctx._fake.sent == []
     assert ctx._fake.llm_calls == []
+
+
+from bot import detect_paper_index, load_paper_fulltext
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("介紹第7篇", 7),
+        ("第 7 篇論文在講什麼？", 7),
+        ("第  12  篇", 12),
+        ("第1篇", 1),
+        ("what is rag?", None),
+        ("", None),
+        ("介紹第一篇", None),  # Chinese numerals not supported (YAGNI for v1)
+    ],
+)
+def test_detect_paper_index(text, expected):
+    assert detect_paper_index(text) == expected
+
+
+def test_load_paper_fulltext_hit(tmp_path: Path):
+    (tmp_path / "2501.00001.md").write_text("body", encoding="utf-8")
+    papers = [{"arxiv_id": "2501.00001", "title": "A"}]
+    assert load_paper_fulltext(1, papers, tmp_path) == "body"
+
+
+def test_load_paper_fulltext_out_of_range(tmp_path: Path):
+    papers = [{"arxiv_id": "2501.00001"}]
+    assert load_paper_fulltext(0, papers, tmp_path) is None
+    assert load_paper_fulltext(2, papers, tmp_path) is None
+
+
+def test_load_paper_fulltext_missing_file(tmp_path: Path):
+    papers = [{"arxiv_id": "2501.00999"}]
+    assert load_paper_fulltext(1, papers, tmp_path) is None
+
+
+def test_handle_update_attaches_paper_fulltext_when_index_detected(tmp_db: Path, tmp_path: Path):
+    (tmp_path / "2501.12345.md").write_text("FULLTEXT HERE", encoding="utf-8")
+    ctx = _mk_ctx(tmp_db)
+    ctx.todays_papers = [{"arxiv_id": "2501.12345", "title": "P"}]
+    ctx.papers_md_dir = tmp_path
+    handle_update(_msg("42", "介紹第1篇的細節"), ctx)
+    assert ctx._fake.llm_calls[0][2].get("paper_fulltext") == "FULLTEXT HERE"
+
+
+def test_handle_update_no_fulltext_when_no_index_in_text(tmp_db: Path, tmp_path: Path):
+    (tmp_path / "2501.12345.md").write_text("FT", encoding="utf-8")
+    ctx = _mk_ctx(tmp_db)
+    ctx.todays_papers = [{"arxiv_id": "2501.12345"}]
+    ctx.papers_md_dir = tmp_path
+    handle_update(_msg("42", "隨便問個普通問題"), ctx)
+    assert ctx._fake.llm_calls[0][2].get("paper_fulltext") is None
 
 
 from bot import run_loop

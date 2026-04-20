@@ -79,8 +79,14 @@ def build_chat_prompt(
     history: list[dict],
     current: str,
     todays_papers: list[dict] | None = None,
+    paper_fulltext: str | None = None,
 ) -> str:
-    """Assemble system prompt + optional papers block + optional history + current."""
+    """Assemble system prompt + optional papers + optional fulltext + history + current.
+
+    ``paper_fulltext`` is the full markdown of a single paper the user is asking
+    about in depth. Placed between the short summaries block and the dialog
+    history so it cache-aligns by paper.
+    """
     parts = [BOT_SYSTEM_PROMPT]
     if todays_papers:
         parts.append("--- 今日 paper_radar 推播的論文 ---")
@@ -96,6 +102,9 @@ def build_chat_prompt(
                 parts.append(f"   link: {p['arxiv_url']}")
             if p.get("tags"):
                 parts.append(f"   tags: {', '.join(p['tags'])}")
+    if paper_fulltext:
+        parts.append("--- 使用者提到那篇的論文全文（markdown）---")
+        parts.append(paper_fulltext)
     if history:
         parts.append("--- 對話歷史 ---")
         for h in history:

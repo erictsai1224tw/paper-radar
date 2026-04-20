@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,7 @@ BOT_DB_PATH = _MODULE_DIR / "bot.sqlite"
 ENV_PATH = _MODULE_DIR / ".env"
 LOG_PATH = _MODULE_DIR / "bot.log"
 SUMMARIES_PATH = _MODULE_DIR / "summaries.json"
+PAPERS_MD_DIR = _MODULE_DIR / "papers_md"
 
 _CLAUDE_DISALLOWED_TOOLS = "WebSearch,WebFetch,Bash,Read,Write,Edit,Glob,Grep,TodoWrite,Task"
 
@@ -69,15 +71,44 @@ def ask_llm(
     backend: str,
     timeout: int,
     todays_papers: list[dict] | None = None,
+    paper_fulltext: str | None = None,
 ) -> str:
     """Shell out to `claude -p` / `gemini -p` with history + papers context."""
     runner = _BACKENDS.get(backend)
     if runner is None:
         raise ValueError(f"unknown backend {backend!r}")
     prompt = build_chat_prompt(
-        history=history, current=text, todays_papers=todays_papers
+        history=history,
+        current=text,
+        todays_papers=todays_papers,
+        paper_fulltext=paper_fulltext,
     )
     return runner(prompt, timeout)
+
+
+_PAPER_INDEX_RE = re.compile(r"第\s*(\d+)\s*篇")
+
+
+def detect_paper_index(text: str) -> int | None:
+    """Extract a 1-based paper index from text like '第 7 篇' / '第7篇論文'."""
+    m = _PAPER_INDEX_RE.search(text)
+    return int(m.group(1)) if m else None
+
+
+def load_paper_fulltext(
+    index: int, papers: list[dict], papers_md_dir: Path | str
+) -> str | None:
+    """Read papers_md/{arxiv_id}.md for the 1-based N-th paper; None if unavailable."""
+    if not (1 <= index <= len(papers)):
+        return None
+    arxiv_id = papers[index - 1].get("arxiv_id")
+    if not arxiv_id:
+        return None
+    path = Path(papers_md_dir) / f"{arxiv_id}.md"
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
 
 
 def load_todays_papers() -> list[dict]:
@@ -147,8 +178,14 @@ class Context:
     llm_timeout: int
     send_message: Callable[[str, str], None]
     send_chat_action: Callable[[str, str], None]
-    ask_llm: Callable[[str, list[dict], str, int], str]
+    ask_llm: Callable[..., str]
     typing_interval: float = 4.0
+    todays_papers: list[dict] = None  # populated per ctx build
+    papers_md_dir: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.todays_papers is None:
+            self.todays_papers = []
 
 
 _HELP_TEXT = (
@@ -233,8 +270,18 @@ def _handle_free_form(chat_id: str, text: str, backend: str, ctx: Context) -> No
     pump.start()
     try:
         history = get_history(ctx.db_path, chat_id, limit=ctx.history_turns * 2)
+
+        paper_fulltext: str | None = None
+        idx = detect_paper_index(text)
+        if idx is not None and ctx.papers_md_dir is not None:
+            paper_fulltext = load_paper_fulltext(idx, ctx.todays_papers, ctx.papers_md_dir)
+
         try:
-            reply = ctx.ask_llm(text, history, backend, ctx.llm_timeout)
+            reply = ctx.ask_llm(
+                text, history, backend, ctx.llm_timeout,
+                todays_papers=ctx.todays_papers,
+                paper_fulltext=paper_fulltext,
+            )
         except subprocess.CalledProcessError as exc:
             logger.warning(
                 "ask_llm(%s) non-zero exit for chat=%s: rc=%s stderr=%r stdout=%r",
@@ -312,10 +359,6 @@ def _build_ctx() -> Context:
     token = os.environ["TELEGRAM_QA_BOT_TOKEN"]
     # Re-read summaries.json each ctx build so new pushes surface without restart.
     papers = load_todays_papers()
-
-    def _ask(text, history, backend, timeout):
-        return ask_llm(text, history, backend, timeout, todays_papers=papers)
-
     return Context(
         db_path=BOT_DB_PATH,
         whitelist=load_whitelist(),
@@ -324,7 +367,9 @@ def _build_ctx() -> Context:
         llm_timeout=int(os.environ.get("BOT_LLM_TIMEOUT", "120")),
         send_message=lambda cid, txt: telegram_client.send_message(token, cid, txt),
         send_chat_action=lambda cid, a: telegram_client.send_chat_action(token, cid, a),
-        ask_llm=_ask,
+        ask_llm=ask_llm,
+        todays_papers=papers,
+        papers_md_dir=PAPERS_MD_DIR,
     )
 
 

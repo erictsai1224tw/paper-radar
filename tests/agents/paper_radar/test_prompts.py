@@ -55,3 +55,21 @@ def test_build_chat_prompt_omits_papers_block_when_empty_or_none():
     out_empty = build_chat_prompt(history=[], current="x", todays_papers=[])
     for out in (out_none, out_empty):
         assert "paper_radar 推播" not in out
+
+
+def test_build_chat_prompt_includes_paper_fulltext_when_given():
+    out = build_chat_prompt(
+        history=[],
+        current="第 1 篇用什麼 dataset?",
+        paper_fulltext="# Paper A\n\n## Datasets\nImageNet, COCO",
+    )
+    assert "論文全文" in out
+    assert "ImageNet" in out
+    assert out.index("ImageNet") < out.index("第 1 篇用什麼 dataset?")
+
+
+def test_build_chat_prompt_omits_fulltext_when_empty_or_none():
+    out_none = build_chat_prompt(history=[], current="x")
+    out_empty = build_chat_prompt(history=[], current="x", paper_fulltext="")
+    for out in (out_none, out_empty):
+        assert "論文全文" not in out

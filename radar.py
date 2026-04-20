@@ -19,6 +19,7 @@ import requests
 from dotenv import load_dotenv
 
 from db import get_seen_ids, init_db, mark_seen
+from paper_markdown import fetch_pdf_as_markdown
 from prompts import NOTION_PUSH_PROMPT, SUMMARIZE_PROMPT
 from telegram_client import send_message as _tg_send
 
@@ -34,6 +35,7 @@ LLM_TIMEOUT = 120  # seconds per paper (applies to claude & gemini)
 CLAUDE_TIMEOUT = LLM_TIMEOUT  # kept for push_to_notion backward compat
 DB_PATH = _MODULE_DIR / "db.sqlite"
 SUMMARIES_PATH = _MODULE_DIR / "summaries.json"
+PAPERS_MD_DIR = _MODULE_DIR / "papers_md"
 ENV_PATH = _MODULE_DIR / ".env"
 LOG_PATH = _MODULE_DIR / "radar.log"
 
@@ -352,6 +354,12 @@ def main() -> int:
         logger.info("summarizing with %s", provider)
         summaries = [summarize(p, provider=provider) for p in fresh]
         logger.info("summarized %d papers", len(summaries))
+
+        logger.info("caching paper markdowns to %s", PAPERS_MD_DIR)
+        for s in summaries:
+            md_path = fetch_pdf_as_markdown(s["arxiv_id"], PAPERS_MD_DIR)
+            if md_path:
+                logger.info("markdown cached: %s", md_path.name)
 
         parent = os.environ["NOTION_PARENT_PAGE_URL"]
         notion_url = push_to_notion(summaries, SUMMARIES_PATH, parent)
