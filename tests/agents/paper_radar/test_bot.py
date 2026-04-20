@@ -285,9 +285,11 @@ from bot import detect_paper_index, load_paper_fulltext
         ("第 7 篇論文在講什麼？", 7),
         ("第  12  篇", 12),
         ("第1篇", 1),
+        ("介紹第一篇", 1),
+        ("第七篇的 method 細節", 7),
+        ("那第 十 篇呢", 10),
         ("what is rag?", None),
         ("", None),
-        ("介紹第一篇", None),  # Chinese numerals not supported (YAGNI for v1)
     ],
 )
 def test_detect_paper_index(text, expected):

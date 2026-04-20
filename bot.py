@@ -86,13 +86,18 @@ def ask_llm(
     return runner(prompt, timeout)
 
 
-_PAPER_INDEX_RE = re.compile(r"第\s*(\d+)\s*篇")
+_PAPER_INDEX_RE = re.compile(r"第\s*(\d+|[一二三四五六七八九十])\s*篇")
+_ZH_NUMS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+            "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
 
 
 def detect_paper_index(text: str) -> int | None:
-    """Extract a 1-based paper index from text like '第 7 篇' / '第7篇論文'."""
+    """Extract a 1-based paper index from text like '第 7 篇' / '第七篇論文'."""
     m = _PAPER_INDEX_RE.search(text)
-    return int(m.group(1)) if m else None
+    if not m:
+        return None
+    g = m.group(1)
+    return int(g) if g.isdigit() else _ZH_NUMS.get(g)
 
 
 def load_paper_fulltext(
@@ -275,6 +280,10 @@ def _handle_free_form(chat_id: str, text: str, backend: str, ctx: Context) -> No
         idx = detect_paper_index(text)
         if idx is not None and ctx.papers_md_dir is not None:
             paper_fulltext = load_paper_fulltext(idx, ctx.todays_papers, ctx.papers_md_dir)
+        logger.info(
+            "chat=%s backend=%s paper_idx=%s fulltext_chars=%s",
+            chat_id, backend, idx, len(paper_fulltext) if paper_fulltext else 0,
+        )
 
         try:
             reply = ctx.ask_llm(
