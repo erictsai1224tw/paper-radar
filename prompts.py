@@ -87,6 +87,25 @@ notion_url 是 database 的 URL，不是單篇 row。
 """
 
 
+VOICE_OVERVIEW_PROMPT = """以下是今天 paper_radar 推送的 AI 論文摘要清單：
+
+{paper_block}
+
+任務：用台灣口語繁體中文寫一段 3 分鐘左右（約 400-500 字）的單人 podcast 稿，讓使用者通勤時用聽的。
+
+要求：
+- 口語自然，像在跟朋友聊「今天 AI 圈發生了什麼」
+- 可以分成 1-2 個大主題帶過所有 paper，不用逐篇念標題，重要的挑出來講
+- 英文專有名詞（模型名、方法名）可保留，但整體朗讀感要順
+- 結尾用一句話 wrap up
+- 不要寫「歡迎收聽」「我們是 xxx」這類開場白，直接進主題
+- 不要寫 Markdown、標題、bullet，就**一段連續文字**，不要換行
+- 不要念 arxiv id 數字
+
+只回純文字，不要 JSON、不要 ``` fence。
+"""
+
+
 WEEKLY_CLUSTER_PROMPT = """以下是過去 7 天由 paper_radar 推送過的 AI 論文清單，每行格式是：
 序號. [arxiv_id] "title" — tldr (tags: ...)
 
