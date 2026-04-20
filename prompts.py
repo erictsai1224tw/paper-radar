@@ -87,6 +87,32 @@ notion_url 是 database 的 URL，不是單篇 row。
 """
 
 
+WEEKLY_CLUSTER_PROMPT = """以下是過去 7 天由 paper_radar 推送過的 AI 論文清單，每行格式是：
+序號. [arxiv_id] "title" — tldr (tags: ...)
+
+{paper_block}
+
+任務：把這批論文分成 3-5 個主題 cluster，回台灣口語繁體中文。避免翻譯腔。
+
+只回 JSON（不要 ``` fence），格式：
+{{
+  "clusters": [
+    {{
+      "theme": "主題名（3-8 字，譬如「Diffusion 改良」「RL alignment」）",
+      "summary": "2-3 句話，說這主題本週發生了什麼、有什麼值得注意的",
+      "arxiv_ids": ["id1", "id2"]
+    }}
+  ]
+}}
+
+要求：
+- 每篇只放進一個最相關的 cluster
+- cluster 之間要互斥，不要重疊
+- arxiv_ids 用原始 id（不要 url）
+- 若某個主題只有 1 篇但很重要，也可以獨立成一個 cluster
+"""
+
+
 EXPLAIN_FIGURE_PROMPT = """這是一篇 AI paper 的 Figure 1 原始 caption：
 
 Title: {title}
