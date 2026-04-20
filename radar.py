@@ -19,7 +19,9 @@ import requests
 from dotenv import load_dotenv
 
 from db import get_seen_ids, init_db, mark_seen
+from paper_markdown import fetch_pdf_as_markdown
 from prompts import NOTION_PUSH_PROMPT, SUMMARIZE_PROMPT
+from telegram_client import send_message as _tg_send
 
 _MODULE_DIR = Path(__file__).resolve().parent
 
@@ -28,12 +30,12 @@ TOP_N = 8
 HF_API_LIMIT = 30
 HF_API_URL = "https://huggingface.co/api/daily_papers"
 CLAUDE_MODEL = "sonnet"
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3-flash-preview"
 LLM_TIMEOUT = 120  # seconds per paper (applies to claude & gemini)
 CLAUDE_TIMEOUT = LLM_TIMEOUT  # kept for push_to_notion backward compat
-TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 DB_PATH = _MODULE_DIR / "db.sqlite"
 SUMMARIES_PATH = _MODULE_DIR / "summaries.json"
+PAPERS_MD_DIR = _MODULE_DIR / "papers_md"
 ENV_PATH = _MODULE_DIR / ".env"
 LOG_PATH = _MODULE_DIR / "radar.log"
 
@@ -74,13 +76,27 @@ def fetch_papers(
     return papers
 
 
+def _extract_year(item: dict, arxiv_id: str) -> int | None:
+    """arxiv_id YYMM.NNNNN 前綴為論文原始年份；HF publishedAt 是「加進 daily 的日期」不準。"""
+    try:
+        yy = int(arxiv_id.split(".")[0][:2])
+        return 2000 + yy
+    except (ValueError, IndexError):
+        pass
+    pub = item.get("publishedAt") or item.get("paper", {}).get("publishedAt")
+    if isinstance(pub, str) and len(pub) >= 4 and pub[:4].isdigit():
+        return int(pub[:4])
+    return None
+
+
 def _normalize(item: dict) -> dict:
     paper = item["paper"]
     arxiv_id = paper["id"]
     return {
         "arxiv_id": arxiv_id,
         "title": paper["title"],
-        "tldr": paper.get("summary", ""),
+        "tldr": paper.get("summary", ""),  # fallback abstract, will be overwritten by summarize()
+        "year": _extract_year(item, arxiv_id),
         "upvotes": paper.get("upvotes", 0),
         "arxiv_url": f"https://arxiv.org/abs/{arxiv_id}",
         "hf_url": f"https://huggingface.co/papers/{arxiv_id}",
@@ -141,10 +157,11 @@ _SUMMARIZER_RUNNERS = {
 
 
 def summarize(paper: dict, provider: str | None = None) -> dict:
-    """用 `claude -p` 或 `gemini -p` 摘要，回傳加上 summary_zh + tags 的 paper dict。
+    """用 `claude -p` 或 `gemini -p` 做結構化摘要。
 
+    加到 paper dict 的欄位：tldr (覆蓋 abstract), venue, strengths, limitations, tags
     provider 優先序：顯式參數 > SUMMARIZER 環境變數 > "claude"。
-    失敗時 fallback 成用 tldr 當 summary_zh、空 tags，log 警告不 abort。
+    失敗時 fallback：tldr 沿用 abstract，strengths/limitations 空、tags 空。
     """
     if provider is None:
         provider = os.environ.get("SUMMARIZER", "claude").lower()
@@ -160,17 +177,30 @@ def summarize(paper: dict, provider: str | None = None) -> dict:
     )
     try:
         inner = json.loads(runner(prompt))
-        summary_zh = inner["summary_zh"]
+        tldr = inner["tldr"]
+        venue = inner.get("venue", "")
+        strengths = inner.get("strengths", [])
+        limitations = inner.get("limitations", [])
         tags = inner.get("tags", [])
     except (subprocess.SubprocessError, json.JSONDecodeError, KeyError) as exc:
         logger.warning(
-            "summarize(%s) failed for %s: %s — falling back to tldr",
+            "summarize(%s) failed for %s: %s — falling back to abstract",
             provider, paper["arxiv_id"], exc,
         )
-        summary_zh = paper["tldr"]
+        tldr = paper["tldr"]
+        venue = ""
+        strengths = []
+        limitations = []
         tags = []
 
-    return {**paper, "summary_zh": summary_zh, "tags": tags}
+    return {
+        **paper,
+        "tldr": tldr,
+        "venue": venue,
+        "strengths": strengths,
+        "limitations": limitations,
+        "tags": tags,
+    }
 
 
 def push_to_notion(
@@ -221,15 +251,21 @@ def _build_paper_message(idx: int, paper: dict) -> str:
     import html
 
     title = html.escape(paper["title"][:_TITLE_MAX])
-    summary = html.escape(paper.get("summary_zh", "").strip())
+    tldr = html.escape(paper.get("tldr", "").strip())
     tags = " · ".join(html.escape(t) for t in paper.get("tags", []))
     upvotes = paper.get("upvotes", 0)
+    year = paper.get("year")
+    venue = (paper.get("venue") or "").strip()
     arxiv_url = html.escape(paper.get("arxiv_url", ""), quote=True)
 
     parts = [f"<b>{idx}. {title}</b>"]
-    if summary:
-        parts.append(summary)
+    if tldr:
+        parts.append(tldr)
     meta_bits: list[str] = []
+    if venue:
+        meta_bits.append(html.escape(venue))
+    if year:
+        meta_bits.append(str(year))
     if tags:
         meta_bits.append(f"🏷️ {tags}")
     if upvotes:
@@ -239,20 +275,6 @@ def _build_paper_message(idx: int, paper: dict) -> str:
     if arxiv_url:
         parts.append(f'🔗 <a href="{arxiv_url}">arxiv</a>')
     return "\n".join(parts)
-
-
-def _send_telegram_message(url: str, chat_id: str, text: str) -> None:
-    resp = requests.post(
-        url,
-        json={
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
 
 
 def notify_telegram(
@@ -271,13 +293,13 @@ def notify_telegram(
     if today is None:
         today = date.today().isoformat()
 
-    url = TELEGRAM_API.format(token=bot_token)
     n = len(papers)
 
     try:
-        _send_telegram_message(
-            url, chat_id,
+        _tg_send(
+            bot_token, chat_id,
             f"📚 <b>AI Radar {html.escape(today)}</b> — {n} 篇新論文",
+            parse_mode="HTML",
         )
     except Exception as exc:
         logger.warning("notify_telegram header failed: %s", exc)
@@ -286,15 +308,16 @@ def notify_telegram(
     for i, paper in enumerate(papers, start=1):
         time.sleep(_TELEGRAM_MSG_DELAY)
         try:
-            _send_telegram_message(url, chat_id, _build_paper_message(i, paper))
+            _tg_send(bot_token, chat_id, _build_paper_message(i, paper), parse_mode="HTML")
         except Exception as exc:
             logger.warning("notify_telegram paper %s failed: %s", paper.get("arxiv_id"), exc)
 
     time.sleep(_TELEGRAM_MSG_DELAY)
     try:
-        _send_telegram_message(
-            url, chat_id,
+        _tg_send(
+            bot_token, chat_id,
             f'<a href="{html.escape(notion_url, quote=True)}">👉 看 Notion 完整整理</a>',
+            parse_mode="HTML",
         )
     except Exception as exc:
         logger.warning("notify_telegram notion link failed: %s", exc)
@@ -332,6 +355,12 @@ def main() -> int:
         summaries = [summarize(p, provider=provider) for p in fresh]
         logger.info("summarized %d papers", len(summaries))
 
+        logger.info("caching paper markdowns to %s", PAPERS_MD_DIR)
+        for s in summaries:
+            md_path = fetch_pdf_as_markdown(s["arxiv_id"], PAPERS_MD_DIR)
+            if md_path:
+                logger.info("markdown cached: %s", md_path.name)
+
         parent = os.environ["NOTION_PARENT_PAGE_URL"]
         notion_url = push_to_notion(summaries, SUMMARIES_PATH, parent)
         logger.info("notion page: %s", notion_url)
@@ -339,8 +368,8 @@ def main() -> int:
         notify_telegram(
             summaries,
             notion_url,
-            bot_token=os.environ["TELEGRAM_BOT_TOKEN"],
-            chat_id=os.environ["TELEGRAM_CHAT_ID"],
+            bot_token=os.environ["TELEGRAM_NOTIFY_BOT_TOKEN"],
+            chat_id=os.environ["TELEGRAM_NOTIFY_CHAT_ID"],
         )
 
         mark_seen(db_path, summaries)

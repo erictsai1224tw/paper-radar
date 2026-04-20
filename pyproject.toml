@@ -9,6 +9,7 @@ dependencies = [
     "torchvision",
     "requests>=2.31",
     "python-dotenv>=1.0",
+    "markitdown[pdf]>=0.1.5",
 ]
 
 [dependency-groups]
