@@ -24,3 +24,17 @@ services:
     #   - "8888"      # 例如 Jupyter
     stdin_open: true
     tty: true
+
+  paper_radar_bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python bot.py
+    env_file: .env
+    volumes:
+      - .:/app
+    environment:
+      - TZ=Asia/Taipei
+      - UV_PROJECT_ENVIRONMENT=/venv
+      - VIRTUAL_ENV=/venv
+    restart: unless-stopped
