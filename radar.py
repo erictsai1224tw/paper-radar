@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 
 from db import get_seen_ids, init_db, mark_seen
 from prompts import NOTION_PUSH_PROMPT, SUMMARIZE_PROMPT
+from telegram_client import send_message as _tg_send
 
 _MODULE_DIR = Path(__file__).resolve().parent
 
@@ -28,10 +29,9 @@ TOP_N = 8
 HF_API_LIMIT = 30
 HF_API_URL = "https://huggingface.co/api/daily_papers"
 CLAUDE_MODEL = "sonnet"
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3-flash-preview"
 LLM_TIMEOUT = 120  # seconds per paper (applies to claude & gemini)
 CLAUDE_TIMEOUT = LLM_TIMEOUT  # kept for push_to_notion backward compat
-TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 DB_PATH = _MODULE_DIR / "db.sqlite"
 SUMMARIES_PATH = _MODULE_DIR / "summaries.json"
 ENV_PATH = _MODULE_DIR / ".env"
@@ -241,20 +241,6 @@ def _build_paper_message(idx: int, paper: dict) -> str:
     return "\n".join(parts)
 
 
-def _send_telegram_message(url: str, chat_id: str, text: str) -> None:
-    resp = requests.post(
-        url,
-        json={
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-
-
 def notify_telegram(
     papers: list[dict],
     notion_url: str,
@@ -271,13 +257,13 @@ def notify_telegram(
     if today is None:
         today = date.today().isoformat()
 
-    url = TELEGRAM_API.format(token=bot_token)
     n = len(papers)
 
     try:
-        _send_telegram_message(
-            url, chat_id,
+        _tg_send(
+            bot_token, chat_id,
             f"📚 <b>AI Radar {html.escape(today)}</b> — {n} 篇新論文",
+            parse_mode="HTML",
         )
     except Exception as exc:
         logger.warning("notify_telegram header failed: %s", exc)
@@ -286,15 +272,16 @@ def notify_telegram(
     for i, paper in enumerate(papers, start=1):
         time.sleep(_TELEGRAM_MSG_DELAY)
         try:
-            _send_telegram_message(url, chat_id, _build_paper_message(i, paper))
+            _tg_send(bot_token, chat_id, _build_paper_message(i, paper), parse_mode="HTML")
         except Exception as exc:
             logger.warning("notify_telegram paper %s failed: %s", paper.get("arxiv_id"), exc)
 
     time.sleep(_TELEGRAM_MSG_DELAY)
     try:
-        _send_telegram_message(
-            url, chat_id,
+        _tg_send(
+            bot_token, chat_id,
             f'<a href="{html.escape(notion_url, quote=True)}">👉 看 Notion 完整整理</a>',
+            parse_mode="HTML",
         )
     except Exception as exc:
         logger.warning("notify_telegram notion link failed: %s", exc)
