@@ -124,6 +124,7 @@ class Context:
     send_message: Callable[[str, str], None]
     send_chat_action: Callable[[str, str], None]
     ask_llm: Callable[[str, list[dict], str, int], str]
+    typing_interval: float = 4.0
 
 
 _HELP_TEXT = (
@@ -183,29 +184,50 @@ def _handle_command(chat_id: str, text: str, ctx: Context) -> None:
     ctx.send_message(chat_id, f"未知指令：{cmd}\n{_HELP_TEXT}")
 
 
-def _handle_free_form(chat_id: str, text: str, backend: str, ctx: Context) -> None:
-    try:
-        ctx.send_chat_action(chat_id, "typing")
-    except Exception as exc:
-        logger.warning("send_chat_action failed: %s", exc)
+def _typing_pump(chat_id: str, ctx: Context, stop: "threading.Event") -> None:
+    """Keep firing ``sendChatAction("typing")`` until ``stop`` is set.
 
-    history = get_history(ctx.db_path, chat_id, limit=ctx.history_turns * 2)
-    try:
-        reply = ctx.ask_llm(text, history, backend, ctx.llm_timeout)
-    except Exception as exc:
-        logger.warning("ask_llm failed for chat=%s: %s", chat_id, exc)
-        ctx.send_message(chat_id, "⏱️ 回覆失敗，請再試一次")
-        return
-
-    append_turn(ctx.db_path, chat_id, "user", text)
-    append_turn(ctx.db_path, chat_id, "assistant", reply)
-
-    for chunk in split_for_telegram(reply):
+    Telegram's typing indicator expires after ~5s, so we re-fire every
+    ``ctx.typing_interval`` seconds (default 4) until the LLM returns.
+    """
+    while True:
         try:
-            ctx.send_message(chat_id, chunk)
+            ctx.send_chat_action(chat_id, "typing")
         except Exception as exc:
-            logger.warning("send_message failed for chat=%s: %s", chat_id, exc)
+            logger.warning("send_chat_action pump failed: %s", exc)
+        if stop.wait(ctx.typing_interval):
             return
+
+
+def _handle_free_form(chat_id: str, text: str, backend: str, ctx: Context) -> None:
+    import threading
+
+    stop_pump = threading.Event()
+    pump = threading.Thread(
+        target=_typing_pump, args=(chat_id, ctx, stop_pump), daemon=True
+    )
+    pump.start()
+    try:
+        history = get_history(ctx.db_path, chat_id, limit=ctx.history_turns * 2)
+        try:
+            reply = ctx.ask_llm(text, history, backend, ctx.llm_timeout)
+        except Exception as exc:
+            logger.warning("ask_llm failed for chat=%s: %s", chat_id, exc)
+            ctx.send_message(chat_id, "⏱️ 回覆失敗，請再試一次")
+            return
+
+        append_turn(ctx.db_path, chat_id, "user", text)
+        append_turn(ctx.db_path, chat_id, "assistant", reply)
+
+        for chunk in split_for_telegram(reply):
+            try:
+                ctx.send_message(chat_id, chunk)
+            except Exception as exc:
+                logger.warning("send_message failed for chat=%s: %s", chat_id, exc)
+                return
+    finally:
+        stop_pump.set()
+        pump.join(timeout=1)
 
 
 import time

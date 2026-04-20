@@ -166,6 +166,7 @@ def _mk_ctx(tmp_db: Path, **overrides) -> Context:
         send_message=send,
         send_chat_action=action,
         ask_llm=ask,
+        typing_interval=overrides.get("typing_interval", 4.0),
     )
     ctx._fake = fake  # type: ignore[attr-defined]
     return ctx
@@ -215,10 +216,26 @@ def test_plain_text_uses_default_backend_and_records_history(tmp_db: Path):
     ctx._fake.llm_reply = "hi there"
     handle_update(_msg("42", "hello"), ctx)
     assert ctx._fake.llm_calls == [("hello", "claude")]
-    assert ctx._fake.actions == [("42", "typing")]
+    assert ("42", "typing") in ctx._fake.actions
     hist = get_history(tmp_db, "42", limit=10)
     assert [h["role"] for h in hist] == ["user", "assistant"]
     assert [h["text"] for h in hist] == ["hello", "hi there"]
+
+
+def test_typing_indicator_pumps_during_slow_llm(tmp_db: Path):
+    """Pump should re-fire the typing indicator at least twice if LLM is slow."""
+    import time as _time
+
+    ctx = _mk_ctx(tmp_db, typing_interval=0.02)
+
+    def slow_llm(text, history, backend, timeout):
+        ctx._fake.llm_calls.append((text, backend))
+        _time.sleep(0.1)
+        return "ok"
+
+    ctx.ask_llm = slow_llm
+    handle_update(_msg("42", "hi"), ctx)
+    assert ctx._fake.actions.count(("42", "typing")) >= 2
 
 
 def test_slash_claude_forces_claude_regardless_of_default(tmp_db: Path):
