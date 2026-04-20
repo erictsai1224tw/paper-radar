@@ -50,3 +50,26 @@ def get_updates(
     )
     resp.raise_for_status()
     return resp.json().get("result", [])
+
+
+def send_photo(
+    token: str,
+    chat_id: str,
+    photo_path: str,
+    caption: str | None = None,
+    parse_mode: str | None = None,
+) -> None:
+    """Send an image file via Telegram sendPhoto. Caption limit: 1024 chars."""
+    data: dict = {"chat_id": chat_id}
+    if caption:
+        data["caption"] = caption[:1024]
+        if parse_mode:
+            data["parse_mode"] = parse_mode
+    with open(photo_path, "rb") as fp:
+        resp = requests.post(
+            _API.format(token=token, method="sendPhoto"),
+            data=data,
+            files={"photo": fp},
+            timeout=60,
+        )
+    resp.raise_for_status()

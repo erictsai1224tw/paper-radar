@@ -67,6 +67,20 @@ notion_url 是 database 的 URL，不是單篇 row。
 """
 
 
+EXPLAIN_FIGURE_PROMPT = """這是一篇 AI paper 的 Figure 1 原始 caption：
+
+Title: {title}
+Caption: {caption}
+
+用台灣口語繁體中文，**不超過 40 字**，一句話濃縮這張圖到底在講什麼。
+- 避免翻譯腔（不要「這張圖展示了」「本圖顯示」開頭）
+- 直接講圖的重點，不用複述 caption 內的每個細節
+- 英文專有名詞可保留原文
+
+只回一段純文字，不要 JSON、不要 ``` fence。
+"""
+
+
 BOT_SYSTEM_PROMPT = """你是使用者的 coding 助手，透過 Telegram 對話。
 - 預設用繁體中文回答，除非問題本身是英文
 - 程式碼用 ``` fence 包起來

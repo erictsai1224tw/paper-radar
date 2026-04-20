@@ -82,3 +82,39 @@ def test_get_updates_returns_empty_list_when_no_results():
         resp.json = MagicMock(return_value={"ok": True, "result": []})
         mock_get.return_value = resp
         assert get_updates("tok", offset=0) == []
+
+
+from telegram_client import send_photo
+
+
+def test_send_photo_posts_file_and_caption(tmp_path):
+    img = tmp_path / "x.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    with patch("telegram_client.requests.post") as mock_post:
+        mock_post.return_value = _mock_resp()
+        send_photo("tok", "42", str(img), caption="hello world")
+
+    assert mock_post.call_args.args[0] == "https://api.telegram.org/bottok/sendPhoto"
+    data = mock_post.call_args.kwargs["data"]
+    assert data == {"chat_id": "42", "caption": "hello world"}
+    files = mock_post.call_args.kwargs["files"]
+    assert "photo" in files
+
+
+def test_send_photo_truncates_caption_over_1024(tmp_path):
+    img = tmp_path / "x.png"
+    img.write_bytes(b"fake")
+    long = "x" * 2000
+    with patch("telegram_client.requests.post") as mock_post:
+        mock_post.return_value = _mock_resp()
+        send_photo("tok", "1", str(img), caption=long)
+    assert len(mock_post.call_args.kwargs["data"]["caption"]) == 1024
+
+
+def test_send_photo_omits_caption_when_none(tmp_path):
+    img = tmp_path / "x.png"
+    img.write_bytes(b"fake")
+    with patch("telegram_client.requests.post") as mock_post:
+        mock_post.return_value = _mock_resp()
+        send_photo("tok", "1", str(img))
+    assert "caption" not in mock_post.call_args.kwargs["data"]
