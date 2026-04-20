@@ -19,9 +19,11 @@ import requests
 from dotenv import load_dotenv
 
 from db import get_seen_ids, init_db, mark_seen
+from paper_figure import fetch_first_figure
 from paper_markdown import fetch_pdf_as_markdown
-from prompts import NOTION_PUSH_PROMPT, SUMMARIZE_PROMPT
+from prompts import EXPLAIN_FIGURE_PROMPT, NOTION_PUSH_PROMPT, SUMMARIZE_PROMPT
 from telegram_client import send_message as _tg_send
+from telegram_client import send_photo as _tg_send_photo
 
 _MODULE_DIR = Path(__file__).resolve().parent
 
@@ -36,6 +38,7 @@ CLAUDE_TIMEOUT = LLM_TIMEOUT  # kept for push_to_notion backward compat
 DB_PATH = _MODULE_DIR / "db.sqlite"
 SUMMARIES_PATH = _MODULE_DIR / "summaries.json"
 PAPERS_MD_DIR = _MODULE_DIR / "papers_md"
+PAPERS_FIG_DIR = _MODULE_DIR / "papers_fig"
 ENV_PATH = _MODULE_DIR / ".env"
 LOG_PATH = _MODULE_DIR / "radar.log"
 
@@ -154,6 +157,30 @@ _SUMMARIZER_RUNNERS = {
     "claude": _run_claude_summarize,
     "gemini": _run_gemini_summarize,
 }
+
+
+def explain_figure(
+    paper: dict, caption: str, provider: str | None = None
+) -> str:
+    """Turn a Figure 1 caption into a short Chinese blurb via claude/gemini.
+
+    Falls back to the raw caption (truncated) on any failure.
+    """
+    if provider is None:
+        provider = os.environ.get("SUMMARIZER", "claude").lower()
+    runner = _SUMMARIZER_RUNNERS.get(provider) or _run_claude_summarize
+
+    prompt = EXPLAIN_FIGURE_PROMPT.format(
+        title=paper["title"], caption=caption,
+    )
+    try:
+        return runner(prompt).strip()
+    except subprocess.SubprocessError as exc:
+        logger.warning(
+            "explain_figure(%s) failed for %s: %s — falling back to raw caption",
+            provider, paper["arxiv_id"], exc,
+        )
+        return caption[:200]
 
 
 def summarize(paper: dict, provider: str | None = None) -> dict:
@@ -312,6 +339,15 @@ def notify_telegram(
         except Exception as exc:
             logger.warning("notify_telegram paper %s failed: %s", paper.get("arxiv_id"), exc)
 
+        fig_path = paper.get("figure_path")
+        if fig_path and Path(fig_path).exists():
+            time.sleep(_TELEGRAM_MSG_DELAY)
+            fig_caption = paper.get("figure_explain") or paper.get("figure_caption") or ""
+            try:
+                _tg_send_photo(bot_token, chat_id, fig_path, caption=fig_caption)
+            except Exception as exc:
+                logger.warning("notify_telegram figure %s failed: %s", paper.get("arxiv_id"), exc)
+
     time.sleep(_TELEGRAM_MSG_DELAY)
     try:
         _tg_send(
@@ -360,6 +396,20 @@ def main() -> int:
             md_path = fetch_pdf_as_markdown(s["arxiv_id"], PAPERS_MD_DIR)
             if md_path:
                 logger.info("markdown cached: %s", md_path.name)
+
+        logger.info("extracting Figure 1 images to %s", PAPERS_FIG_DIR)
+        for s in summaries:
+            fig = fetch_first_figure(s["arxiv_id"], PAPERS_FIG_DIR)
+            if fig:
+                png_path, caption = fig
+                s["figure_path"] = str(png_path)
+                s["figure_caption"] = caption
+                if caption:
+                    s["figure_explain"] = explain_figure(s, caption, provider=provider)
+                    logger.info(
+                        "figure[%s]: %s  explain=%r",
+                        s["arxiv_id"], png_path.name, s["figure_explain"][:80],
+                    )
 
         parent = os.environ["NOTION_PARENT_PAGE_URL"]
         notion_url = push_to_notion(summaries, SUMMARIES_PATH, parent)
