@@ -22,7 +22,13 @@ from db import get_seen_ids, init_db, mark_seen
 from paper_figure import fetch_first_figure
 from paper_markdown import fetch_pdf_as_markdown
 from paper_s2 import fetch_s2_metadata
-from prompts import EXPLAIN_FIGURE_PROMPT, NOTION_PUSH_PROMPT, SUMMARIZE_PROMPT
+from prompts import (
+    EXPLAIN_FIGURE_PROMPT,
+    NOTION_PUSH_PROMPT,
+    SUMMARIZE_PROMPT,
+    VOICE_OVERVIEW_PROMPT,
+)
+from telegram_client import send_audio as _tg_send_audio
 from telegram_client import send_message as _tg_send
 from telegram_client import send_photo as _tg_send_photo
 
@@ -40,6 +46,7 @@ DB_PATH = _MODULE_DIR / "db.sqlite"
 SUMMARIES_PATH = _MODULE_DIR / "summaries.json"
 PAPERS_MD_DIR = _MODULE_DIR / "papers_md"
 PAPERS_FIG_DIR = _MODULE_DIR / "papers_fig"
+PAPERS_VOICE_DIR = _MODULE_DIR / "papers_voice"
 ENV_PATH = _MODULE_DIR / ".env"
 LOG_PATH = _MODULE_DIR / "radar.log"
 
@@ -181,6 +188,34 @@ _SUMMARIZER_RUNNERS = {
     "claude": _run_claude_summarize,
     "gemini": _run_gemini_summarize,
 }
+
+
+def build_voice_script(
+    papers: list[dict], provider: str | None = None
+) -> str:
+    """Ask claude/gemini for a 400-500 character Chinese voice-over script.
+
+    Returns an empty string on any failure — caller should skip TTS in that case.
+    """
+    if provider is None:
+        provider = os.environ.get("SUMMARIZER", "claude").lower()
+    runner = _SUMMARIZER_RUNNERS.get(provider) or _run_claude_summarize
+
+    lines = []
+    for i, p in enumerate(papers, 1):
+        tldr = p.get("tldr", "")
+        tags = ", ".join(p.get("tags", []))
+        lines.append(f'{i}. "{p["title"]}" — {tldr} (tags: {tags})')
+    prompt = VOICE_OVERVIEW_PROMPT.format(paper_block="\n".join(lines))
+
+    try:
+        return runner(prompt).strip()
+    except subprocess.SubprocessError as exc:
+        logger.warning(
+            "build_voice_script(%s) failed: %s — skipping TTS",
+            provider, exc,
+        )
+        return ""
 
 
 def explain_figure(
@@ -400,6 +435,35 @@ def notify_telegram(
         logger.warning("notify_telegram notion link failed: %s", exc)
 
 
+def _maybe_send_voice_overview(summaries: list[dict], provider: str) -> None:
+    """Generate a Chinese podcast-style voice overview and send via the notify bot.
+
+    Fully optional — fires only when VOICE_OVERVIEW is truthy in the env. Any
+    failure (LLM, TTS, upload) logs and returns; it never aborts the pipeline.
+    """
+    try:
+        from paper_voice import generate_audio
+
+        script = build_voice_script(summaries, provider=provider)
+        if not script:
+            logger.info("voice: empty script — skip")
+            return
+        today_str = date.today().isoformat()
+        audio_path = generate_audio(script, PAPERS_VOICE_DIR / f"{today_str}.mp3")
+        if audio_path is None:
+            return
+        _tg_send_audio(
+            os.environ["TELEGRAM_NOTIFY_BOT_TOKEN"],
+            os.environ["TELEGRAM_NOTIFY_CHAT_ID"],
+            str(audio_path),
+            title=f"AI Radar {today_str}",
+            performer="paper_radar",
+        )
+        logger.info("voice overview sent: %s (%d chars)", audio_path.name, len(script))
+    except Exception as exc:
+        logger.warning("voice overview failed: %s", exc)
+
+
 def main() -> int:
     load_dotenv(ENV_PATH)
     log_level = os.environ.get("LOG_LEVEL", "INFO")
@@ -479,6 +543,9 @@ def main() -> int:
             bot_token=os.environ["TELEGRAM_NOTIFY_BOT_TOKEN"],
             chat_id=os.environ["TELEGRAM_NOTIFY_CHAT_ID"],
         )
+
+        if os.environ.get("VOICE_OVERVIEW", "").lower() in ("1", "true", "yes"):
+            _maybe_send_voice_overview(summaries, provider=provider)
 
         mark_seen(db_path, summaries)
         try:

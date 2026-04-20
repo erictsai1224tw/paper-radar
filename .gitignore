@@ -6,6 +6,7 @@ bot.sqlite
 bot.log
 papers_md/
 papers_fig/
+papers_voice/
 papers_archive.jsonl
 .env
 __pycache__/

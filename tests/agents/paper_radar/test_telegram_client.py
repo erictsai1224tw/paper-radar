@@ -118,3 +118,29 @@ def test_send_photo_omits_caption_when_none(tmp_path):
         mock_post.return_value = _mock_resp()
         send_photo("tok", "1", str(img))
     assert "caption" not in mock_post.call_args.kwargs["data"]
+
+
+from telegram_client import send_audio
+
+
+def test_send_audio_posts_file_with_metadata(tmp_path):
+    mp3 = tmp_path / "song.mp3"
+    mp3.write_bytes(b"\xff\xfb fake mp3")
+    with patch("telegram_client.requests.post") as mock_post:
+        mock_post.return_value = _mock_resp()
+        send_audio("tok", "42", str(mp3), title="Daily Radar", performer="paper_radar")
+
+    assert mock_post.call_args.args[0] == "https://api.telegram.org/bottok/sendAudio"
+    data = mock_post.call_args.kwargs["data"]
+    assert data == {"chat_id": "42", "title": "Daily Radar", "performer": "paper_radar"}
+    assert "audio" in mock_post.call_args.kwargs["files"]
+
+
+def test_send_audio_omits_empty_title_and_performer(tmp_path):
+    mp3 = tmp_path / "x.mp3"
+    mp3.write_bytes(b"fake")
+    with patch("telegram_client.requests.post") as mock_post:
+        mock_post.return_value = _mock_resp()
+        send_audio("tok", "42", str(mp3))
+    data = mock_post.call_args.kwargs["data"]
+    assert data == {"chat_id": "42"}

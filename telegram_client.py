@@ -73,3 +73,29 @@ def send_photo(
             timeout=60,
         )
     resp.raise_for_status()
+
+
+def send_audio(
+    token: str,
+    chat_id: str,
+    audio_path: str,
+    title: str = "",
+    performer: str = "",
+    caption: str | None = None,
+) -> None:
+    """Send an audio file via Telegram sendAudio. Max 50MB per Bot API."""
+    data: dict = {"chat_id": chat_id}
+    if title:
+        data["title"] = title
+    if performer:
+        data["performer"] = performer
+    if caption:
+        data["caption"] = caption[:1024]
+    with open(audio_path, "rb") as fp:
+        resp = requests.post(
+            _API.format(token=token, method="sendAudio"),
+            data=data,
+            files={"audio": fp},
+            timeout=120,
+        )
+    resp.raise_for_status()
