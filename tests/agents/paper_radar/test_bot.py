@@ -262,3 +262,100 @@ def test_update_without_text_is_ignored(tmp_db: Path):
     handle_update({"update_id": 1, "message": {"chat": {"id": 42}}}, ctx)
     assert ctx._fake.sent == []
     assert ctx._fake.llm_calls == []
+
+
+from bot import run_loop
+
+
+def test_run_loop_processes_updates_and_advances_offset(tmp_db: Path, monkeypatch):
+    init_chat_db(tmp_db)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+
+    seen: list[int] = []
+    offsets: list[int] = []
+
+    def fake_get_updates(token, offset, long_poll_timeout):
+        offsets.append(offset)
+        if offset == 0:
+            return [
+                {"update_id": 10, "message": {"chat": {"id": 42}, "text": "/help"}},
+                {"update_id": 11, "message": {"chat": {"id": 42}, "text": "/reset"}},
+            ]
+        raise KeyboardInterrupt
+
+    def fake_handler(upd, ctx):
+        seen.append(upd["update_id"])
+
+    try:
+        run_loop(
+            db_path=tmp_db,
+            get_updates_fn=fake_get_updates,
+            handler=fake_handler,
+            ctx_factory=lambda: None,
+            sleep_fn=lambda s: None,
+        )
+    except KeyboardInterrupt:
+        pass
+
+    assert seen == [10, 11]
+    assert offsets[0] == 0
+    assert offsets[1] == 12
+
+
+def test_run_loop_advances_offset_even_when_handler_raises(tmp_db: Path, monkeypatch):
+    init_chat_db(tmp_db)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+
+    polls = [0]
+
+    def fake_get_updates(token, offset, long_poll_timeout):
+        polls[0] += 1
+        if polls[0] == 1:
+            return [{"update_id": 7, "message": {"chat": {"id": 42}, "text": "x"}}]
+        raise KeyboardInterrupt
+
+    def boom(upd, ctx):
+        raise RuntimeError("handler broke")
+
+    try:
+        run_loop(
+            db_path=tmp_db,
+            get_updates_fn=fake_get_updates,
+            handler=boom,
+            ctx_factory=lambda: None,
+            sleep_fn=lambda s: None,
+        )
+    except KeyboardInterrupt:
+        pass
+
+    from chat_db import get_offset
+    assert get_offset(tmp_db) == 8
+
+
+def test_run_loop_sleeps_on_get_updates_network_error(tmp_db: Path, monkeypatch):
+    import requests as rq
+    init_chat_db(tmp_db)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+
+    slept: list[float] = []
+    calls = [0]
+
+    def fake_get_updates(token, offset, long_poll_timeout):
+        calls[0] += 1
+        if calls[0] == 1:
+            raise rq.RequestException("boom")
+        raise KeyboardInterrupt
+
+    try:
+        run_loop(
+            db_path=tmp_db,
+            get_updates_fn=fake_get_updates,
+            handler=lambda u, c: None,
+            ctx_factory=lambda: None,
+            sleep_fn=lambda s: slept.append(s),
+        )
+    except KeyboardInterrupt:
+        pass
+
+    assert slept and slept[0] >= 1

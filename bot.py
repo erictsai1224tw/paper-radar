@@ -198,3 +198,40 @@ def _handle_free_form(chat_id: str, text: str, backend: str, ctx: Context) -> No
         except Exception as exc:
             logger.warning("send_message failed for chat=%s: %s", chat_id, exc)
             return
+
+
+import time
+
+import requests
+
+from chat_db import get_offset, init_chat_db, set_offset
+
+
+def run_loop(
+    db_path: Path,
+    get_updates_fn: Callable[[str, int, int], list[dict]],
+    handler: Callable[[dict, Context], None],
+    ctx_factory: Callable[[], Context],
+    sleep_fn: Callable[[float], None] = time.sleep,
+    long_poll_timeout: int = 30,
+) -> None:
+    """Long-poll loop. Injects getUpdates + handler so tests can fake them."""
+    token = os.environ["TELEGRAM_BOT_TOKEN"]
+    offset = get_offset(db_path)
+
+    while True:
+        try:
+            updates = get_updates_fn(token, offset, long_poll_timeout)
+        except requests.RequestException as exc:
+            logger.warning("getUpdates failed: %s — sleeping 5s", exc)
+            sleep_fn(5)
+            continue
+
+        ctx = ctx_factory()
+        for upd in updates:
+            try:
+                handler(upd, ctx)
+            except Exception:
+                logger.exception("handler crashed on update_id=%s", upd.get("update_id"))
+            offset = upd["update_id"] + 1
+            set_offset(db_path, offset)
