@@ -70,10 +70,9 @@ def ask_llm(text: str, history: list[dict], backend: str, timeout: int) -> str:
 
 def load_whitelist() -> set[str]:
     raw = os.environ.get("TELEGRAM_AUTHORIZED_CHAT_IDS", "").strip()
-    if raw:
-        return {x.strip() for x in raw.split(",") if x.strip()}
-    fallback = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-    return {fallback} if fallback else set()
+    if not raw:
+        return set()
+    return {x.strip() for x in raw.split(",") if x.strip()}
 
 
 def is_authorized(chat_id: str, whitelist: set[str]) -> bool:
@@ -225,7 +224,7 @@ def run_loop(
     long_poll_timeout: int = 30,
 ) -> None:
     """Long-poll loop. Injects getUpdates + handler so tests can fake them."""
-    token = os.environ["TELEGRAM_BOT_TOKEN"]
+    token = os.environ["TELEGRAM_QA_BOT_TOKEN"]
     offset = get_offset(db_path)
 
     while True:
@@ -257,7 +256,7 @@ def _configure_logging() -> None:
 
 
 def _build_ctx() -> Context:
-    token = os.environ["TELEGRAM_BOT_TOKEN"]
+    token = os.environ["TELEGRAM_QA_BOT_TOKEN"]
     return Context(
         db_path=BOT_DB_PATH,
         whitelist=load_whitelist(),
@@ -277,7 +276,7 @@ def main() -> int:
     init_chat_db(BOT_DB_PATH)
     whitelist = load_whitelist()
     if not whitelist:
-        logger.error("TELEGRAM_AUTHORIZED_CHAT_IDS / TELEGRAM_CHAT_ID unset — refusing to start")
+        logger.error("TELEGRAM_AUTHORIZED_CHAT_IDS unset — refusing to start")
         return 1
     logger.info("whitelist=%s backend=%s", whitelist, os.environ.get("BOT_BACKEND", "claude"))
 

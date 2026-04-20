@@ -326,8 +326,8 @@ def main() -> int:
         notify_telegram(
             summaries,
             notion_url,
-            bot_token=os.environ["TELEGRAM_BOT_TOKEN"],
-            chat_id=os.environ["TELEGRAM_CHAT_ID"],
+            bot_token=os.environ["TELEGRAM_NOTIFY_BOT_TOKEN"],
+            chat_id=os.environ["TELEGRAM_NOTIFY_CHAT_ID"],
         )
 
         mark_seen(db_path, summaries)

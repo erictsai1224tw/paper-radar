@@ -60,21 +60,15 @@ def test_load_whitelist_reads_csv(monkeypatch):
     assert load_whitelist() == {"1", "22", "333"}
 
 
-def test_load_whitelist_falls_back_to_telegram_chat_id(monkeypatch):
+def test_load_whitelist_does_not_fall_back_to_notify_chat_id(monkeypatch):
+    """No silent fallback — Q&A bot has its own explicit allowlist."""
     monkeypatch.delenv("TELEGRAM_AUTHORIZED_CHAT_IDS", raising=False)
-    monkeypatch.setenv("TELEGRAM_CHAT_ID", "77")
-    assert load_whitelist() == {"77"}
-
-
-def test_load_whitelist_authorized_overrides_chat_id(monkeypatch):
-    monkeypatch.setenv("TELEGRAM_AUTHORIZED_CHAT_IDS", "1,2")
-    monkeypatch.setenv("TELEGRAM_CHAT_ID", "999")
-    assert load_whitelist() == {"1", "2"}
+    monkeypatch.setenv("TELEGRAM_NOTIFY_CHAT_ID", "77")
+    assert load_whitelist() == set()
 
 
 def test_load_whitelist_empty_when_nothing_set(monkeypatch):
     monkeypatch.delenv("TELEGRAM_AUTHORIZED_CHAT_IDS", raising=False)
-    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
     assert load_whitelist() == set()
 
 
@@ -269,8 +263,7 @@ from bot import run_loop
 
 def test_run_loop_processes_updates_and_advances_offset(tmp_db: Path, monkeypatch):
     init_chat_db(tmp_db)
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+    monkeypatch.setenv("TELEGRAM_QA_BOT_TOKEN", "tok")
 
     seen: list[int] = []
     offsets: list[int] = []
@@ -305,7 +298,7 @@ def test_run_loop_processes_updates_and_advances_offset(tmp_db: Path, monkeypatc
 
 def test_run_loop_advances_offset_even_when_handler_raises(tmp_db: Path, monkeypatch):
     init_chat_db(tmp_db)
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_QA_BOT_TOKEN", "tok")
 
     polls = [0]
 
@@ -336,7 +329,7 @@ def test_run_loop_advances_offset_even_when_handler_raises(tmp_db: Path, monkeyp
 def test_run_loop_sleeps_on_get_updates_network_error(tmp_db: Path, monkeypatch):
     import requests as rq
     init_chat_db(tmp_db)
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_QA_BOT_TOKEN", "tok")
 
     slept: list[float] = []
     calls = [0]

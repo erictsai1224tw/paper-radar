@@ -32,9 +32,13 @@
 - `mark_seen` 只在 Notion + Telegram **都** 成功（且沒 early-exit）後呼叫，失敗時不寫 DB（safe re-run）
 - 所有檔案路徑（`.env`、`db.sqlite`、`summaries.json`、`radar.log`、`bot.sqlite`、`bot.log`）都從 `_MODULE_DIR = Path(__file__).parent` 錨定絕對路徑 — cwd 在哪都一樣找得到，別改回相對路徑
 - `bot.py` 的 `run_loop` 不管 handler 出什麼錯都會推進 offset — poison message 不會卡住 queue；要加 retry 行為記得別改這個不變量
-- Bot whitelist：`TELEGRAM_AUTHORIZED_CHAT_IDS` CSV，未設 fallback 到 `TELEGRAM_CHAT_ID`；空集合時 `bot.main()` 直接 return 1（拒絕啟動，避免被陌生人 DM）
+- Bot whitelist：`TELEGRAM_AUTHORIZED_CHAT_IDS` CSV，**必填**（不 fallback）；空集合時 `bot.main()` 直接 return 1，避免被陌生人 DM
 - Bot LLM 呼叫**沒有** `--allowedTools` 跟 `--max-turns > 1` — 純文字 single-shot Q&A，不給 MCP access
-- 新 env：`TELEGRAM_AUTHORIZED_CHAT_IDS` / `BOT_BACKEND` / `BOT_HISTORY_TURNS` / `BOT_LLM_TIMEOUT`
+- **兩個獨立 Telegram bot token**：
+  - `TELEGRAM_NOTIFY_BOT_TOKEN` + `TELEGRAM_NOTIFY_CHAT_ID` — radar.py 單向推論文用
+  - `TELEGRAM_QA_BOT_TOKEN` + `TELEGRAM_AUTHORIZED_CHAT_IDS` — bot.py 互動 Q&A 用
+  - 兩邊 chat_id 可以一樣（都發給你自己）但 token 要不同，在 @BotFather 建兩個 bot
+- 其他新 env：`BOT_BACKEND` / `BOT_HISTORY_TURNS` / `BOT_LLM_TIMEOUT`
 
 ## 改完之後
 
