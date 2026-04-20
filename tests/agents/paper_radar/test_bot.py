@@ -49,3 +49,35 @@ def test_ask_llm_propagates_timeout():
     ):
         with pytest.raises(subprocess.TimeoutExpired):
             ask_llm("q", history=[], backend="claude", timeout=60)
+
+
+from bot import is_authorized, load_whitelist
+
+
+def test_load_whitelist_reads_csv(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_AUTHORIZED_CHAT_IDS", "1,22, 333 ")
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    assert load_whitelist() == {"1", "22", "333"}
+
+
+def test_load_whitelist_falls_back_to_telegram_chat_id(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_AUTHORIZED_CHAT_IDS", raising=False)
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "77")
+    assert load_whitelist() == {"77"}
+
+
+def test_load_whitelist_authorized_overrides_chat_id(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_AUTHORIZED_CHAT_IDS", "1,2")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "999")
+    assert load_whitelist() == {"1", "2"}
+
+
+def test_load_whitelist_empty_when_nothing_set(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_AUTHORIZED_CHAT_IDS", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    assert load_whitelist() == set()
+
+
+def test_is_authorized_checks_membership():
+    assert is_authorized("42", {"42", "99"}) is True
+    assert is_authorized("100", {"42", "99"}) is False
