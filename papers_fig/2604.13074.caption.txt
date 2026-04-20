@@ -1,1 +1,0 @@
-Illustration of PersonaVLM’s three core capabilities for long-term personalization. PersonaVLM proactively remembers user

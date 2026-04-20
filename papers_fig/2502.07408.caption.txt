@@ -1,1 +1,0 @@
-DNL applied to RegNetY-400MF’s Radosavovic et al. (2020a) first convolution layer. The original (Sobel-
