@@ -27,3 +27,26 @@ def send_message(
         timeout=_DEFAULT_TIMEOUT,
     )
     resp.raise_for_status()
+
+
+def send_chat_action(token: str, chat_id: str, action: str) -> None:
+    resp = requests.post(
+        _API.format(token=token, method="sendChatAction"),
+        json={"chat_id": chat_id, "action": action},
+        timeout=_DEFAULT_TIMEOUT,
+    )
+    resp.raise_for_status()
+
+
+def get_updates(
+    token: str,
+    offset: int,
+    long_poll_timeout: int = 30,
+) -> list[dict]:
+    resp = requests.get(
+        _API.format(token=token, method="getUpdates"),
+        params={"offset": offset, "timeout": long_poll_timeout},
+        timeout=long_poll_timeout + 10,
+    )
+    resp.raise_for_status()
+    return resp.json().get("result", [])
