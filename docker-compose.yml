@@ -1,0 +1,26 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    runtime: nvidia
+    shm_size: '64gb'
+    volumes:
+      - .:/app
+      - ${HOME}/.ssh:/home/docker/.ssh:ro
+      # - ${HOME}/.cache/huggingface:/cache/huggingface   # 選用：跨 project 共用 HF cache
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - TZ=Asia/Taipei
+      - GIT_NAME=${GIT_NAME:-}
+      - GIT_EMAIL=${GIT_EMAIL:-}
+      - COLORTERM=truecolor
+      - UV_PROJECT_ENVIRONMENT=/venv
+      - VIRTUAL_ENV=/venv
+      - HF_HOME=/cache/huggingface
+    # ports:
+    #   - "8000"      # 依專案需求取消註解
+    #   - "8888"      # 例如 Jupyter
+    stdin_open: true
+    tty: true

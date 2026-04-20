@@ -1,0 +1,8 @@
+# Paper Radar — daily at 22:00 Asia/Taipei
+# Timezone comes from docker-compose.yml env `TZ=Asia/Taipei`.
+# Loaded by supercronic on container start (see docker-entrypoint.sh).
+
+PATH=/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/docker/.local/bin
+PYTHONPATH=/app
+
+0 22 * * * /venv/bin/python -m agents.paper_radar.radar

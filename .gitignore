@@ -1,0 +1,7 @@
+db.sqlite
+summaries.json
+radar.log
+.env
+__pycache__/
+*.pyc
+.claude/
