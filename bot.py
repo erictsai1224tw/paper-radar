@@ -97,3 +97,104 @@ def split_for_telegram(text: str) -> list[str]:
     if remaining:
         chunks.append(remaining)
     return chunks
+
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+
+from chat_db import append_turn, clear_history, get_history
+
+
+@dataclass
+class Context:
+    db_path: Path
+    whitelist: set[str]
+    default_backend: str
+    history_turns: int
+    llm_timeout: int
+    send_message: Callable[[str, str], None]
+    send_chat_action: Callable[[str, str], None]
+    ask_llm: Callable[[str, list[dict], str, int], str]
+
+
+_HELP_TEXT = (
+    "可用指令：\n"
+    "/help — 顯示這段\n"
+    "/reset — 清空對話歷史\n"
+    "/backend — 顯示目前預設 backend\n"
+    "/claude <q> — 這則強制用 claude\n"
+    "/gemini <q> — 這則強制用 gemini\n"
+    "直接傳訊息：用預設 backend 回答，帶歷史"
+)
+
+
+def handle_update(upd: dict, ctx: Context) -> None:
+    msg = upd.get("message") or {}
+    text = msg.get("text")
+    chat_id_raw = (msg.get("chat") or {}).get("id")
+    if not text or chat_id_raw is None:
+        return
+    chat_id = str(chat_id_raw)
+
+    if not is_authorized(chat_id, ctx.whitelist):
+        logger.warning("unauthorized chat_id=%s", chat_id)
+        ctx.send_message(chat_id, "unauthorized")
+        return
+
+    if text.startswith("/"):
+        _handle_command(chat_id, text, ctx)
+        return
+
+    _handle_free_form(chat_id, text, ctx.default_backend, ctx)
+
+
+def _handle_command(chat_id: str, text: str, ctx: Context) -> None:
+    parts = text.split(maxsplit=1)
+    cmd = parts[0]
+    arg = parts[1] if len(parts) > 1 else ""
+
+    if cmd in ("/start", "/help"):
+        ctx.send_message(chat_id, _HELP_TEXT)
+        return
+    if cmd == "/reset":
+        clear_history(ctx.db_path, chat_id)
+        ctx.send_message(chat_id, "歷史已清空")
+        return
+    if cmd == "/backend":
+        ctx.send_message(chat_id, f"目前 backend: {ctx.default_backend}")
+        return
+    if cmd in ("/claude", "/gemini"):
+        if not arg.strip():
+            ctx.send_message(chat_id, "需要問題內容")
+            return
+        backend = cmd[1:]
+        _handle_free_form(chat_id, arg, backend, ctx)
+        return
+
+    ctx.send_message(chat_id, f"未知指令：{cmd}\n{_HELP_TEXT}")
+
+
+def _handle_free_form(chat_id: str, text: str, backend: str, ctx: Context) -> None:
+    try:
+        ctx.send_chat_action(chat_id, "typing")
+    except Exception as exc:
+        logger.warning("send_chat_action failed: %s", exc)
+
+    history = get_history(ctx.db_path, chat_id, limit=ctx.history_turns * 2)
+    try:
+        reply = ctx.ask_llm(text, history, backend, ctx.llm_timeout)
+    except Exception as exc:
+        logger.warning("ask_llm failed for chat=%s: %s", chat_id, exc)
+        ctx.send_message(chat_id, "⏱️ 回覆失敗，請再試一次")
+        return
+
+    append_turn(ctx.db_path, chat_id, "user", text)
+    append_turn(ctx.db_path, chat_id, "assistant", reply)
+
+    for chunk in split_for_telegram(reply):
+        try:
+            ctx.send_message(chat_id, chunk)
+        except Exception as exc:
+            logger.warning("send_message failed for chat=%s: %s", chat_id, exc)
+            return

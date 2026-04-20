@@ -129,3 +129,136 @@ def test_split_handles_very_long_input():
     chunks = split_for_telegram(s)
     assert "".join(chunks) == s
     assert all(len(c) <= 4096 for c in chunks)
+
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from chat_db import append_turn, get_history, init_chat_db
+from bot import Context, handle_update
+
+
+@dataclass
+class FakeContext:
+    sent: list[tuple] = field(default_factory=list)
+    actions: list[tuple] = field(default_factory=list)
+    llm_calls: list[tuple] = field(default_factory=list)
+    llm_reply: str = "llm-reply"
+    llm_error: Exception | None = None
+
+
+def _mk_ctx(tmp_db: Path, **overrides) -> Context:
+    init_chat_db(tmp_db)
+    fake = FakeContext()
+
+    def send(chat_id, text):
+        fake.sent.append((chat_id, text))
+
+    def action(chat_id, a):
+        fake.actions.append((chat_id, a))
+
+    def ask(text, history, backend, timeout):
+        fake.llm_calls.append((text, backend))
+        if fake.llm_error is not None:
+            raise fake.llm_error
+        return fake.llm_reply
+
+    ctx = Context(
+        db_path=tmp_db,
+        whitelist={"42"},
+        default_backend=overrides.get("default_backend", "claude"),
+        history_turns=overrides.get("history_turns", 10),
+        llm_timeout=60,
+        send_message=send,
+        send_chat_action=action,
+        ask_llm=ask,
+    )
+    ctx._fake = fake  # type: ignore[attr-defined]
+    return ctx
+
+
+def _msg(chat_id: str, text: str) -> dict:
+    return {"update_id": 1, "message": {"chat": {"id": int(chat_id)}, "text": text}}
+
+
+def test_unauthorized_chat_is_refused_without_llm(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("999", "hi"), ctx)
+    assert ctx._fake.llm_calls == []
+    assert len(ctx._fake.sent) == 1
+    assert "unauthorized" in ctx._fake.sent[0][1].lower()
+
+
+def test_start_command_replies_with_help_without_calling_llm(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/start"), ctx)
+    assert ctx._fake.llm_calls == []
+    assert len(ctx._fake.sent) == 1
+
+
+def test_help_command_replies(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/help"), ctx)
+    assert len(ctx._fake.sent) == 1
+
+
+def test_reset_clears_history(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    append_turn(tmp_db, "42", "user", "old")
+    handle_update(_msg("42", "/reset"), ctx)
+    assert get_history(tmp_db, "42", limit=10) == []
+    assert ctx._fake.llm_calls == []
+
+
+def test_backend_command_reports_default(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db, default_backend="gemini")
+    handle_update(_msg("42", "/backend"), ctx)
+    assert any("gemini" in t for _, t in ctx._fake.sent)
+
+
+def test_plain_text_uses_default_backend_and_records_history(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db, default_backend="claude")
+    ctx._fake.llm_reply = "hi there"
+    handle_update(_msg("42", "hello"), ctx)
+    assert ctx._fake.llm_calls == [("hello", "claude")]
+    assert ctx._fake.actions == [("42", "typing")]
+    hist = get_history(tmp_db, "42", limit=10)
+    assert [h["role"] for h in hist] == ["user", "assistant"]
+    assert [h["text"] for h in hist] == ["hello", "hi there"]
+
+
+def test_slash_claude_forces_claude_regardless_of_default(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db, default_backend="gemini")
+    handle_update(_msg("42", "/claude what is rag?"), ctx)
+    assert ctx._fake.llm_calls == [("what is rag?", "claude")]
+    hist = get_history(tmp_db, "42", limit=10)
+    assert [h["text"] for h in hist] == ["what is rag?", "llm-reply"]
+
+
+def test_slash_gemini_forces_gemini(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db, default_backend="claude")
+    handle_update(_msg("42", "/gemini solve x"), ctx)
+    assert ctx._fake.llm_calls == [("solve x", "gemini")]
+
+
+def test_bare_slash_claude_returns_help(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/claude"), ctx)
+    assert ctx._fake.llm_calls == []
+    assert any("需要問題內容" in t for _, t in ctx._fake.sent)
+
+
+def test_llm_error_replies_with_generic_message_and_skips_history(tmp_db: Path):
+    import subprocess as sp
+    ctx = _mk_ctx(tmp_db)
+    ctx._fake.llm_error = sp.TimeoutExpired(cmd="claude", timeout=60)
+    handle_update(_msg("42", "hi"), ctx)
+    assert "失敗" in ctx._fake.sent[-1][1] or "超時" in ctx._fake.sent[-1][1]
+    assert get_history(tmp_db, "42", limit=10) == []
+
+
+def test_update_without_text_is_ignored(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    handle_update({"update_id": 1, "message": {"chat": {"id": 42}}}, ctx)
+    assert ctx._fake.sent == []
+    assert ctx._fake.llm_calls == []
