@@ -81,3 +81,51 @@ def test_load_whitelist_empty_when_nothing_set(monkeypatch):
 def test_is_authorized_checks_membership():
     assert is_authorized("42", {"42", "99"}) is True
     assert is_authorized("100", {"42", "99"}) is False
+
+
+from bot import split_for_telegram
+
+TG_LIMIT = 4096
+
+
+def test_split_returns_single_chunk_when_under_limit():
+    assert split_for_telegram("hello") == ["hello"]
+
+
+def test_split_returns_single_chunk_at_exactly_limit():
+    s = "a" * TG_LIMIT
+    assert split_for_telegram(s) == [s]
+
+
+def test_split_prefers_double_newline_boundary():
+    a = "a" * 4000
+    b = "b" * 500
+    s = f"{a}\n\n{b}"
+    chunks = split_for_telegram(s)
+    assert len(chunks) == 2
+    assert chunks[0] == a
+    assert chunks[1] == b
+
+
+def test_split_falls_back_to_single_newline():
+    a = "a" * 4000
+    b = "b" * 500
+    s = f"{a}\n{b}"
+    chunks = split_for_telegram(s)
+    assert len(chunks) == 2
+    assert chunks[0] == a
+    assert chunks[1] == b
+
+
+def test_split_hard_splits_at_4096_when_no_boundary():
+    s = "x" * 5000
+    chunks = split_for_telegram(s)
+    assert chunks[0] == "x" * 4096
+    assert chunks[1] == "x" * (5000 - 4096)
+
+
+def test_split_handles_very_long_input():
+    s = "z" * 10000
+    chunks = split_for_telegram(s)
+    assert "".join(chunks) == s
+    assert all(len(c) <= 4096 for c in chunks)

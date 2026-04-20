@@ -68,3 +68,32 @@ def load_whitelist() -> set[str]:
 
 def is_authorized(chat_id: str, whitelist: set[str]) -> bool:
     return chat_id in whitelist
+
+
+_TG_LIMIT = 4096
+
+
+def split_for_telegram(text: str) -> list[str]:
+    """Split ``text`` into Telegram-safe chunks (<=4096 chars each).
+
+    Prefers splitting at the last \\n\\n before the limit, then the last \\n,
+    then hard-splits at exactly 4096.
+    """
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > _TG_LIMIT:
+        window = remaining[:_TG_LIMIT]
+        cut = window.rfind("\n\n")
+        if cut == -1:
+            cut = window.rfind("\n")
+        if cut == -1:
+            cut = _TG_LIMIT
+            chunks.append(remaining[:cut])
+            remaining = remaining[cut:]
+            continue
+        chunks.append(remaining[:cut])
+        boundary_len = 2 if remaining[cut:cut + 2] == "\n\n" else 1
+        remaining = remaining[cut + boundary_len:]
+    if remaining:
+        chunks.append(remaining)
+    return chunks
