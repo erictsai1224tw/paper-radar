@@ -1,0 +1,1 @@
+(a) During training, the SNR of perturbed sample xt is strictly tied to timestep t. However, during inference, due to network
