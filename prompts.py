@@ -75,9 +75,27 @@ BOT_SYSTEM_PROMPT = """你是使用者的 coding 助手，透過 Telegram 對話
 """
 
 
-def build_chat_prompt(history: list[dict], current: str) -> str:
-    """Assemble system prompt + optional history block + current question."""
+def build_chat_prompt(
+    history: list[dict],
+    current: str,
+    todays_papers: list[dict] | None = None,
+) -> str:
+    """Assemble system prompt + optional papers block + optional history + current."""
     parts = [BOT_SYSTEM_PROMPT]
+    if todays_papers:
+        parts.append("--- 今日 paper_radar 推播的論文 ---")
+        for i, p in enumerate(todays_papers, start=1):
+            bits = [f'{i}. "{p.get("title", "")}"']
+            if p.get("year"):
+                bits.append(f"({p['year']})")
+            line = " ".join(bits)
+            parts.append(line)
+            if p.get("tldr"):
+                parts.append(f"   tldr: {p['tldr']}")
+            if p.get("arxiv_url"):
+                parts.append(f"   link: {p['arxiv_url']}")
+            if p.get("tags"):
+                parts.append(f"   tags: {', '.join(p['tags'])}")
     if history:
         parts.append("--- 對話歷史 ---")
         for h in history:

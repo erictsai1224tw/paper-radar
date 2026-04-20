@@ -33,3 +33,25 @@ def test_build_chat_prompt_renders_history_oldest_first():
 def test_build_chat_prompt_omits_history_block_when_empty():
     out = build_chat_prompt(history=[], current="x")
     assert "對話歷史" not in out
+
+
+def test_build_chat_prompt_includes_todays_papers_when_given():
+    papers = [
+        {"title": "Paper A", "year": 2025, "tldr": "A短摘要", "arxiv_url": "https://arxiv.org/abs/2501.00001", "tags": ["llm"]},
+        {"title": "Paper B", "year": 2024, "tldr": "B短摘要", "arxiv_url": "https://arxiv.org/abs/2412.00002", "tags": []},
+    ]
+    out = build_chat_prompt(history=[], current="介紹第 1 篇", todays_papers=papers)
+    assert "今日 paper_radar 推播的論文" in out
+    assert '1. "Paper A"' in out
+    assert "(2025)" in out
+    assert "A短摘要" in out
+    assert '2. "Paper B"' in out
+    # first paper must appear before second and before the current question
+    assert out.index("Paper A") < out.index("Paper B") < out.index("介紹第 1 篇")
+
+
+def test_build_chat_prompt_omits_papers_block_when_empty_or_none():
+    out_none = build_chat_prompt(history=[], current="x")
+    out_empty = build_chat_prompt(history=[], current="x", todays_papers=[])
+    for out in (out_none, out_empty):
+        assert "paper_radar 推播" not in out

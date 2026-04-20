@@ -22,6 +22,9 @@ _MODULE_DIR = Path(__file__).resolve().parent
 BOT_DB_PATH = _MODULE_DIR / "bot.sqlite"
 ENV_PATH = _MODULE_DIR / ".env"
 LOG_PATH = _MODULE_DIR / "bot.log"
+SUMMARIES_PATH = _MODULE_DIR / "summaries.json"
+
+_CLAUDE_DISALLOWED_TOOLS = "WebSearch,WebFetch,Bash,Read,Write,Edit,Glob,Grep,TodoWrite,Task"
 
 _CLAUDE_MODEL = "sonnet"
 _GEMINI_MODEL = "gemini-3-flash-preview"
@@ -34,6 +37,7 @@ def _run_claude_bot(prompt: str, timeout: int) -> str:
         "--model", _CLAUDE_MODEL,
         "--output-format", "json",
         "--max-turns", "1",
+        "--disallowedTools", _CLAUDE_DISALLOWED_TOOLS,
     ]
     proc = subprocess.run(
         argv, capture_output=True, text=True,
@@ -59,13 +63,33 @@ def _run_gemini_bot(prompt: str, timeout: int) -> str:
 _BACKENDS = {"claude": _run_claude_bot, "gemini": _run_gemini_bot}
 
 
-def ask_llm(text: str, history: list[dict], backend: str, timeout: int) -> str:
-    """Shell out to `claude -p` / `gemini -p` with history-aware prompt."""
+def ask_llm(
+    text: str,
+    history: list[dict],
+    backend: str,
+    timeout: int,
+    todays_papers: list[dict] | None = None,
+) -> str:
+    """Shell out to `claude -p` / `gemini -p` with history + papers context."""
     runner = _BACKENDS.get(backend)
     if runner is None:
         raise ValueError(f"unknown backend {backend!r}")
-    prompt = build_chat_prompt(history=history, current=text)
+    prompt = build_chat_prompt(
+        history=history, current=text, todays_papers=todays_papers
+    )
     return runner(prompt, timeout)
+
+
+def load_todays_papers() -> list[dict]:
+    """Load the last paper_radar push so the bot can answer 『介紹第 N 篇』."""
+    try:
+        data = json.loads(SUMMARIES_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except FileNotFoundError:
+        return []
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("load_todays_papers failed: %s", exc)
+        return []
 
 
 def load_whitelist() -> set[str]:
@@ -211,8 +235,15 @@ def _handle_free_form(chat_id: str, text: str, backend: str, ctx: Context) -> No
         history = get_history(ctx.db_path, chat_id, limit=ctx.history_turns * 2)
         try:
             reply = ctx.ask_llm(text, history, backend, ctx.llm_timeout)
+        except subprocess.CalledProcessError as exc:
+            logger.warning(
+                "ask_llm(%s) non-zero exit for chat=%s: rc=%s stderr=%r stdout=%r",
+                backend, chat_id, exc.returncode, (exc.stderr or "")[:500], (exc.stdout or "")[:500],
+            )
+            ctx.send_message(chat_id, "⏱️ 回覆失敗，請再試一次")
+            return
         except Exception as exc:
-            logger.warning("ask_llm failed for chat=%s: %s", chat_id, exc)
+            logger.warning("ask_llm(%s) failed for chat=%s: %s", backend, chat_id, exc)
             ctx.send_message(chat_id, "⏱️ 回覆失敗，請再試一次")
             return
 
@@ -279,6 +310,12 @@ def _configure_logging() -> None:
 
 def _build_ctx() -> Context:
     token = os.environ["TELEGRAM_QA_BOT_TOKEN"]
+    # Re-read summaries.json each ctx build so new pushes surface without restart.
+    papers = load_todays_papers()
+
+    def _ask(text, history, backend, timeout):
+        return ask_llm(text, history, backend, timeout, todays_papers=papers)
+
     return Context(
         db_path=BOT_DB_PATH,
         whitelist=load_whitelist(),
@@ -287,7 +324,7 @@ def _build_ctx() -> Context:
         llm_timeout=int(os.environ.get("BOT_LLM_TIMEOUT", "120")),
         send_message=lambda cid, txt: telegram_client.send_message(token, cid, txt),
         send_chat_action=lambda cid, a: telegram_client.send_chat_action(token, cid, a),
-        ask_llm=ask_llm,
+        ask_llm=_ask,
     )
 
 
