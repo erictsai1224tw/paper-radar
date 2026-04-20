@@ -6,3 +6,6 @@ PATH=/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/hom
 PYTHONPATH=/app
 
 0 22 * * * /venv/bin/python -m agents.paper_radar.radar
+
+# Weekly rollup — Sunday 09:00 Asia/Taipei
+0 9 * * 0 /venv/bin/python -m agents.paper_radar.weekly_rollup

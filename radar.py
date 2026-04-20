@@ -481,6 +481,12 @@ def main() -> int:
         )
 
         mark_seen(db_path, summaries)
+        try:
+            from weekly_rollup import ARCHIVE_PATH, archive_papers
+            archive_papers(summaries, ARCHIVE_PATH)
+            logger.info("archived %d papers to %s", len(summaries), ARCHIVE_PATH.name)
+        except Exception as exc:
+            logger.warning("archive_papers failed: %s", exc)
         logger.info("=== done ===")
         return 0
     except Exception:
