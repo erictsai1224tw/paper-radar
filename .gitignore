@@ -5,6 +5,7 @@ radar.log
 bot.sqlite
 bot.log
 papers_md/
+papers_fig/
 .env
 __pycache__/
 *.pyc

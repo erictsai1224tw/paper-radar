@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 from db import get_seen_ids, init_db, mark_seen
 from paper_figure import fetch_first_figure
 from paper_markdown import fetch_pdf_as_markdown
+from paper_s2 import fetch_s2_metadata
 from prompts import EXPLAIN_FIGURE_PROMPT, NOTION_PUSH_PROMPT, SUMMARIZE_PROMPT
 from telegram_client import send_message as _tg_send
 from telegram_client import send_photo as _tg_send_photo
@@ -95,15 +96,38 @@ def _extract_year(item: dict, arxiv_id: str) -> int | None:
 def _normalize(item: dict) -> dict:
     paper = item["paper"]
     arxiv_id = paper["id"]
+    authors = [
+        a.get("name", "")
+        for a in paper.get("authors", [])
+        if isinstance(a, dict) and a.get("name")
+    ]
     return {
         "arxiv_id": arxiv_id,
         "title": paper["title"],
         "tldr": paper.get("summary", ""),  # fallback abstract, will be overwritten by summarize()
         "year": _extract_year(item, arxiv_id),
         "upvotes": paper.get("upvotes", 0),
+        "authors": authors,
+        "github_url": paper.get("githubRepo") or "",
+        "github_stars": paper.get("githubStars") or 0,
         "arxiv_url": f"https://arxiv.org/abs/{arxiv_id}",
         "hf_url": f"https://huggingface.co/papers/{arxiv_id}",
     }
+
+
+def load_watchlist() -> list[str]:
+    """Parse AUTHOR_WATCHLIST env (CSV of name substrings). Case-insensitive match."""
+    raw = os.environ.get("AUTHOR_WATCHLIST", "").strip()
+    if not raw:
+        return []
+    return [n.strip().lower() for n in raw.split(",") if n.strip()]
+
+
+def is_watched(authors: list[str], watchlist: list[str]) -> bool:
+    if not watchlist:
+        return False
+    joined = " | ".join(authors).lower()
+    return any(needle in joined for needle in watchlist)
 
 
 def dedup(papers: list[dict], db_path: Path | str, top_n: int = TOP_N) -> list[dict]:
@@ -208,6 +232,8 @@ def summarize(paper: dict, provider: str | None = None) -> dict:
         venue = inner.get("venue", "")
         strengths = inner.get("strengths", [])
         limitations = inner.get("limitations", [])
+        open_questions = inner.get("open_questions", [])
+        future_work = inner.get("future_work", [])
         tags = inner.get("tags", [])
     except (subprocess.SubprocessError, json.JSONDecodeError, KeyError) as exc:
         logger.warning(
@@ -218,6 +244,8 @@ def summarize(paper: dict, provider: str | None = None) -> dict:
         venue = ""
         strengths = []
         limitations = []
+        open_questions = []
+        future_work = []
         tags = []
 
     return {
@@ -226,6 +254,8 @@ def summarize(paper: dict, provider: str | None = None) -> dict:
         "venue": venue,
         "strengths": strengths,
         "limitations": limitations,
+        "open_questions": open_questions,
+        "future_work": future_work,
         "tags": tags,
     }
 
@@ -277,6 +307,7 @@ def _build_paper_message(idx: int, paper: dict) -> str:
     """組成單篇 paper 的 Telegram 訊息 (HTML mode)。"""
     import html
 
+    star = "⭐ " if paper.get("watched") else ""
     title = html.escape(paper["title"][:_TITLE_MAX])
     tldr = html.escape(paper.get("tldr", "").strip())
     tags = " · ".join(html.escape(t) for t in paper.get("tags", []))
@@ -284,8 +315,11 @@ def _build_paper_message(idx: int, paper: dict) -> str:
     year = paper.get("year")
     venue = (paper.get("venue") or "").strip()
     arxiv_url = html.escape(paper.get("arxiv_url", ""), quote=True)
+    github_url = html.escape(paper.get("github_url", ""), quote=True)
+    cites = paper.get("citation_count", 0)
+    inf_cites = paper.get("influential_citation_count", 0)
 
-    parts = [f"<b>{idx}. {title}</b>"]
+    parts = [f"<b>{star}{idx}. {title}</b>"]
     if tldr:
         parts.append(tldr)
     meta_bits: list[str] = []
@@ -293,14 +327,21 @@ def _build_paper_message(idx: int, paper: dict) -> str:
         meta_bits.append(html.escape(venue))
     if year:
         meta_bits.append(str(year))
+    if cites:
+        meta_bits.append(f"📎 {cites} cites" + (f" ({inf_cites}✨)" if inf_cites else ""))
     if tags:
         meta_bits.append(f"🏷️ {tags}")
     if upvotes:
         meta_bits.append(f"⬆ {upvotes}")
     if meta_bits:
         parts.append("  ".join(meta_bits))
+    links: list[str] = []
     if arxiv_url:
-        parts.append(f'🔗 <a href="{arxiv_url}">arxiv</a>')
+        links.append(f'🔗 <a href="{arxiv_url}">arxiv</a>')
+    if github_url:
+        links.append(f'💻 <a href="{github_url}">code</a>')
+    if links:
+        parts.append("  ".join(links))
     return "\n".join(parts)
 
 
@@ -390,6 +431,23 @@ def main() -> int:
         logger.info("summarizing with %s", provider)
         summaries = [summarize(p, provider=provider) for p in fresh]
         logger.info("summarized %d papers", len(summaries))
+
+        watchlist = load_watchlist()
+        if watchlist:
+            logger.info("watchlist active: %s", watchlist)
+        for s in summaries:
+            s2 = fetch_s2_metadata(s["arxiv_id"])
+            if s2:
+                if s2.get("venue"):
+                    s["venue"] = s2["venue"]
+                s["citation_count"] = s2["citation_count"]
+                s["influential_citation_count"] = s2["influential_citation_count"]
+                logger.info(
+                    "s2[%s] venue=%r cites=%s/%s",
+                    s["arxiv_id"], s2["venue"],
+                    s2["citation_count"], s2["influential_citation_count"],
+                )
+            s["watched"] = is_watched(s.get("authors", []), watchlist)
 
         logger.info("caching paper markdowns to %s", PAPERS_MD_DIR)
         for s in summaries:

@@ -18,6 +18,8 @@ Abstract: {abstract}
   "venue": "",
   "strengths": ["優點1", "優點2"],
   "limitations": ["限制1", "限制2"],
+  "open_questions": ["開放問題 / 後續研究方向1"],
+  "future_work": ["作者明確提到的 future work 1"],
   "tags": ["tag1", "tag2"]
 }}
 
@@ -26,6 +28,8 @@ Abstract: {abstract}
 - venue：abstract 若提到投稿會議/期刊（例 "accepted at CVPR 2025"）就填「CVPR 2025」；沒提填空字串
 - strengths：2-3 點短句，講這篇的貢獻 / 亮點
 - limitations：2-3 點短句，講能看出的限制或待解決問題；看不出就寫「abstract 資訊不足，無法評估」
+- open_questions：這篇提出但沒解決的問題 / 從 abstract 合理推測的後續研究題目；看不出就空 list []
+- future_work：作者在 abstract 裡明確說之後要做什麼；沒提就空 list []
 - tags：2-4 個小寫連字號英文詞，例 ["llm", "rag", "vision-language"]
 """
 
@@ -37,26 +41,42 @@ NOTION_PUSH_PROMPT = """讀 {summaries_path}。
 Step 1：找 database
 - 用 notion-search 找標題 "AI Paper Radar" 且 parent 是 {parent_page_url} 的 database，拿它的 ID
 
-Step 2：若沒找到，用 notion-create-database 建一個，parent_page_url={parent_page_url}，properties：
+Step 2：若沒找到，用 notion-create-database 建一個，parent_page_url={parent_page_url}，properties（完整 schema）：
   - Title — title
   - Year — number
   - Venue — rich_text
   - Link — url
+  - Code — url
   - TL;DR — rich_text
   - Strengths — rich_text
   - Limitations — rich_text
+  - Open Questions — rich_text
+  - Future Work — rich_text
+  - Authors — rich_text
+  - Citations — number
+  - Influential Citations — number
+  - Watched — checkbox
   - My Notes — rich_text
   - Tags — multi_select
   - Date — date
+
+Step 2b（很重要）：若 database 已存在但缺少上面任何一個 property，用 notion-update-data-source 把缺的補上，型別要對。**不要**改已存在 property 的型別，只補缺的。
 
 Step 3：用 notion-create-pages 把 summaries.json 每篇塞成一個 row（parent 是上面的 database）：
   - Title = paper.title
   - Year = paper.year
   - Venue = paper.venue（可能空）
   - Link = paper.arxiv_url
+  - Code = paper.github_url（空就不設）
   - TL;DR = paper.tldr
   - Strengths = paper.strengths 用 "• xxx\\n• yyy" 形式串成一段 rich_text
   - Limitations = 同上，用 paper.limitations
+  - Open Questions = 同上，用 paper.open_questions
+  - Future Work = 同上，用 paper.future_work
+  - Authors = paper.authors 用 ", " 串起來
+  - Citations = paper.citation_count（可能 0）
+  - Influential Citations = paper.influential_citation_count（可能 0）
+  - Watched = paper.watched (bool)
   - My Notes = 留空
   - Tags = paper.tags
   - Date = {date}
