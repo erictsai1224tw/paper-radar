@@ -28,7 +28,9 @@ TOP_N = 8
 HF_API_LIMIT = 30
 HF_API_URL = "https://huggingface.co/api/daily_papers"
 CLAUDE_MODEL = "sonnet"
-CLAUDE_TIMEOUT = 120  # seconds per paper
+GEMINI_MODEL = "gemini-2.5-flash"
+LLM_TIMEOUT = 120  # seconds per paper (applies to claude & gemini)
+CLAUDE_TIMEOUT = LLM_TIMEOUT  # kept for push_to_notion backward compat
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 DB_PATH = _MODULE_DIR / "db.sqlite"
 SUMMARIES_PATH = _MODULE_DIR / "summaries.json"
@@ -92,15 +94,17 @@ def dedup(papers: list[dict], db_path: Path | str, top_n: int = TOP_N) -> list[d
     return fresh[:top_n]
 
 
-def summarize(paper: dict) -> dict:
-    """跑 `claude -p` 摘要，回傳加上 summary_zh + tags 的 paper dict。
+def _strip_json_fence(raw: str) -> str:
+    """若 LLM 把 JSON 包在 ```json ... ``` fence 裡，剝掉 fence。"""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1]  # drop ```json line
+        raw = raw.rsplit("```", 1)[0].strip()
+    return raw
 
-    失敗時 fallback 成用 tldr 當 summary_zh、空 tags，log 警告不 abort。
-    """
-    prompt = SUMMARIZE_PROMPT.format(
-        title=paper["title"],
-        abstract=paper["tldr"],
-    )
+
+def _run_claude_summarize(prompt: str) -> str:
+    """跑 claude -p，回傳 outer JSON 裡的 result 字串（已剝 fence）。"""
     argv = [
         "claude",
         "-p", prompt,
@@ -108,27 +112,60 @@ def summarize(paper: dict) -> dict:
         "--output-format", "json",
         "--max-turns", "1",
     ]
+    proc = subprocess.run(
+        argv, capture_output=True, text=True,
+        timeout=LLM_TIMEOUT, check=True,
+    )
+    return _strip_json_fence(json.loads(proc.stdout)["result"])
+
+
+def _run_gemini_summarize(prompt: str) -> str:
+    """跑 gemini -p，回傳 outer JSON 裡的 response 字串（已剝 fence）。"""
+    argv = [
+        "gemini",
+        "-p", prompt,
+        "--model", GEMINI_MODEL,
+        "--output-format", "json",
+    ]
+    proc = subprocess.run(
+        argv, capture_output=True, text=True,
+        timeout=LLM_TIMEOUT, check=True,
+    )
+    return _strip_json_fence(json.loads(proc.stdout)["response"])
+
+
+_SUMMARIZER_RUNNERS = {
+    "claude": _run_claude_summarize,
+    "gemini": _run_gemini_summarize,
+}
+
+
+def summarize(paper: dict, provider: str | None = None) -> dict:
+    """用 `claude -p` 或 `gemini -p` 摘要，回傳加上 summary_zh + tags 的 paper dict。
+
+    provider 優先序：顯式參數 > SUMMARIZER 環境變數 > "claude"。
+    失敗時 fallback 成用 tldr 當 summary_zh、空 tags，log 警告不 abort。
+    """
+    if provider is None:
+        provider = os.environ.get("SUMMARIZER", "claude").lower()
+    runner = _SUMMARIZER_RUNNERS.get(provider)
+    if runner is None:
+        logger.warning("unknown SUMMARIZER %r — falling back to claude", provider)
+        runner = _run_claude_summarize
+        provider = "claude"
+
+    prompt = SUMMARIZE_PROMPT.format(
+        title=paper["title"],
+        abstract=paper["tldr"],
+    )
     try:
-        proc = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=CLAUDE_TIMEOUT,
-            check=True,
-        )
-        outer = json.loads(proc.stdout)
-        raw_result = outer["result"].strip()
-        # Strip markdown code fences if Claude wraps the JSON
-        if raw_result.startswith("```"):
-            raw_result = raw_result.split("\n", 1)[1]  # drop ```json line
-            raw_result = raw_result.rsplit("```", 1)[0].strip()
-        inner = json.loads(raw_result)
+        inner = json.loads(runner(prompt))
         summary_zh = inner["summary_zh"]
         tags = inner.get("tags", [])
     except (subprocess.SubprocessError, json.JSONDecodeError, KeyError) as exc:
         logger.warning(
-            "summarize failed for %s: %s — falling back to tldr",
-            paper["arxiv_id"], exc,
+            "summarize(%s) failed for %s: %s — falling back to tldr",
+            provider, paper["arxiv_id"], exc,
         )
         summary_zh = paper["tldr"]
         tags = []
@@ -168,16 +205,10 @@ def push_to_notion(
         argv,
         capture_output=True,
         text=True,
-        timeout=CLAUDE_TIMEOUT * 10,  # Notion 流程 multi-turn 要給更多時間
+        timeout=LLM_TIMEOUT * 10,  # Notion 流程 multi-turn 要給更多時間
         check=True,
     )
-    outer = json.loads(proc.stdout)
-    raw_result = outer["result"].strip()
-    # Strip markdown code fences if Claude wraps the JSON (same pattern as summarize)
-    if raw_result.startswith("```"):
-        raw_result = raw_result.split("\n", 1)[1]  # drop ```json line
-        raw_result = raw_result.rsplit("```", 1)[0].strip()
-    inner = json.loads(raw_result)
+    inner = json.loads(_strip_json_fence(json.loads(proc.stdout)["result"]))
     return inner["notion_url"]
 
 
@@ -296,7 +327,9 @@ def main() -> int:
             logger.info("nothing new today — exit")
             return 0
 
-        summaries = [summarize(p) for p in fresh]
+        provider = os.environ.get("SUMMARIZER", "claude").lower()
+        logger.info("summarizing with %s", provider)
+        summaries = [summarize(p, provider=provider) for p in fresh]
         logger.info("summarized %d papers", len(summaries))
 
         parent = os.environ["NOTION_PARENT_PAGE_URL"]

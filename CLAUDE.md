@@ -9,6 +9,8 @@
 ## 結構
 
 - `radar.py` — orchestrator + 5 pure functions (`fetch_papers` / `dedup` / `summarize` / `push_to_notion` / `notify_telegram`) + `main()`
+  - `summarize` 支援 claude / gemini 雙 backend，由 `SUMMARIZER` env var 切換（default `claude`）。Gemini JSON outer key 是 `response`，claude 是 `result` — `_run_claude_summarize` / `_run_gemini_summarize` 各自處理這個差異
+  - `push_to_notion` 仍硬綁 claude（Notion MCP 是 Claude-only）
 - `prompts.py` — `SUMMARIZE_PROMPT` + `NOTION_PUSH_PROMPT`
 - `db.py` — SQLite 包一層：`init_db` / `get_seen_ids` / `mark_seen`
 - `verify/` — 每個 wet step 的 smoke script，手動跑，**不上 CI**
