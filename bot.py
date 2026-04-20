@@ -8,10 +8,20 @@ import json
 import logging
 import os
 import subprocess
+import sys
+from pathlib import Path
 
+from dotenv import load_dotenv
+
+import telegram_client
 from prompts import build_chat_prompt
 
 logger = logging.getLogger(__name__)
+
+_MODULE_DIR = Path(__file__).resolve().parent
+BOT_DB_PATH = _MODULE_DIR / "bot.sqlite"
+ENV_PATH = _MODULE_DIR / ".env"
+LOG_PATH = _MODULE_DIR / "bot.log"
 
 _CLAUDE_MODEL = "sonnet"
 _GEMINI_MODEL = "gemini-3-flash-preview"
@@ -100,7 +110,6 @@ def split_for_telegram(text: str) -> list[str]:
 
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable
 
 from chat_db import append_turn, clear_history, get_history
@@ -235,3 +244,55 @@ def run_loop(
                 logger.exception("handler crashed on update_id=%s", upd.get("update_id"))
             offset = upd["update_id"] + 1
             set_offset(db_path, offset)
+
+
+def _configure_logging() -> None:
+    level = os.environ.get("LOG_LEVEL", "INFO")
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[logging.FileHandler(LOG_PATH), logging.StreamHandler()],
+        force=True,
+    )
+
+
+def _build_ctx() -> Context:
+    token = os.environ["TELEGRAM_BOT_TOKEN"]
+    return Context(
+        db_path=BOT_DB_PATH,
+        whitelist=load_whitelist(),
+        default_backend=os.environ.get("BOT_BACKEND", "claude").lower(),
+        history_turns=int(os.environ.get("BOT_HISTORY_TURNS", "10")),
+        llm_timeout=int(os.environ.get("BOT_LLM_TIMEOUT", "120")),
+        send_message=lambda cid, txt: telegram_client.send_message(token, cid, txt),
+        send_chat_action=lambda cid, a: telegram_client.send_chat_action(token, cid, a),
+        ask_llm=ask_llm,
+    )
+
+
+def main() -> int:
+    load_dotenv(ENV_PATH)
+    _configure_logging()
+    logger.info("=== paper_radar bot starting ===")
+    init_chat_db(BOT_DB_PATH)
+    whitelist = load_whitelist()
+    if not whitelist:
+        logger.error("TELEGRAM_AUTHORIZED_CHAT_IDS / TELEGRAM_CHAT_ID unset — refusing to start")
+        return 1
+    logger.info("whitelist=%s backend=%s", whitelist, os.environ.get("BOT_BACKEND", "claude"))
+
+    try:
+        run_loop(
+            db_path=BOT_DB_PATH,
+            get_updates_fn=telegram_client.get_updates,
+            handler=handle_update,
+            ctx_factory=_build_ctx,
+        )
+    except KeyboardInterrupt:
+        logger.info("interrupted — exiting")
+        return 0
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
