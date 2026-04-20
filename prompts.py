@@ -36,3 +36,23 @@ Page 內容對每篇 paper 加入：
   - divider
 完成後只回傳一個 JSON: {{"notion_url": "https://www.notion.so/..."}}
 """
+
+
+BOT_SYSTEM_PROMPT = """你是使用者的 coding 助手，透過 Telegram 對話。
+- 預設用繁體中文回答，除非問題本身是英文
+- 程式碼用 ``` fence 包起來
+- Telegram 訊息上限 4096 字元，回覆盡量精簡
+- 不要編造 API、函式名、或檔案路徑
+"""
+
+
+def build_chat_prompt(history: list[dict], current: str) -> str:
+    """Assemble system prompt + optional history block + current question."""
+    parts = [BOT_SYSTEM_PROMPT]
+    if history:
+        parts.append("--- 對話歷史 ---")
+        for h in history:
+            parts.append(f"{h['role']}: {h['text']}")
+    parts.append("--- 目前提問 ---")
+    parts.append(f"user: {current}")
+    return "\n".join(parts)
