@@ -542,6 +542,81 @@ def test_notebook_omits_code_url_when_missing(tmp_db: Path, tmp_path: Path):
     assert "Code:" not in ctx._fake.sent[0][1]
 
 
+# --- /search command -------------------------------------------------------
+
+
+def test_search_without_arg_prints_usage(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/search"), ctx)
+    assert len(ctx._fake.sent) == 1
+    assert "用法" in ctx._fake.sent[0][1]
+
+
+def test_search_with_query_pushes_header_plus_each_result(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+
+    fake_results = [
+        {
+            "arxiv_id": "2604.16044",
+            "title": "SNR-t Bias of Diffusion Models",
+            "abstract": "Diffusion models suffer from a bias between SNR and time t.",
+            "authors": ["Alice", "Bob", "Carol", "Dan"],
+            "published": "2026-04-20T10:00:00Z",
+            "arxiv_url": "https://arxiv.org/abs/2604.16044",
+        },
+        {
+            "arxiv_id": "2604.12345",
+            "title": "Another",
+            "abstract": "short",
+            "authors": ["E"],
+            "published": "2026-04-19T09:00:00Z",
+            "arxiv_url": "https://arxiv.org/abs/2604.12345",
+        },
+    ]
+    with patch("paper_arxiv_search.search_arxiv", return_value=fake_results):
+        handle_update(_msg("42", "/search efficient diffusion sampling"), ctx)
+
+    # 1 header + 2 result messages
+    assert len(ctx._fake.sent) == 3
+    header = ctx._fake.sent[0][1]
+    assert "arxiv 搜尋" in header
+    assert "efficient diffusion sampling" in header
+    assert "2 篇最新" in header
+
+    first = ctx._fake.sent[1][1]
+    assert "SNR-t Bias" in first
+    assert "Alice, Bob, Carol et al." in first  # authors truncated at 3
+    assert "2026-04-20" in first
+    assert "arxiv.org/abs/2604.16044" in first
+    # prompt for next-step deep lookup
+    assert "介紹" in first and "notebook" in first
+
+
+def test_search_with_no_results_replies_gracefully(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    with patch("paper_arxiv_search.search_arxiv", return_value=[]):
+        handle_update(_msg("42", "/search abcdefxyz"), ctx)
+    assert len(ctx._fake.sent) == 1
+    assert "沒結果" in ctx._fake.sent[0][1] or "限流" in ctx._fake.sent[0][1]
+
+
+def test_search_result_message_truncates_long_abstract(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    long_abs = "x" * 1000
+    with patch("paper_arxiv_search.search_arxiv", return_value=[{
+        "arxiv_id": "2501.00001",
+        "title": "T",
+        "abstract": long_abs,
+        "authors": [],
+        "published": "2026-01-01T00:00:00Z",
+        "arxiv_url": "https://arxiv.org/abs/2501.00001",
+    }]):
+        handle_update(_msg("42", "/search t"), ctx)
+    msg = ctx._fake.sent[1][1]
+    assert "…" in msg  # ellipsis marker
+    assert len(msg) < 900  # clearly shorter than raw 1000-char abstract
+
+
 from bot import run_loop
 
 
