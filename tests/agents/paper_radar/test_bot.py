@@ -617,6 +617,104 @@ def test_search_result_message_truncates_long_abstract(tmp_db: Path):
     assert len(msg) < 900  # clearly shorter than raw 1000-char abstract
 
 
+# --- /similar --------------------------------------------------------------
+
+
+def _fake_s2_result(aid: str, title: str = "P") -> dict:
+    return {
+        "arxiv_id": aid,
+        "title": title,
+        "abstract": "abs",
+        "authors": ["Ada"],
+        "arxiv_url": f"https://arxiv.org/abs/{aid}",
+    }
+
+
+def test_similar_without_arg_prints_usage(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/similar"), ctx)
+    assert "用法" in ctx._fake.sent[0][1]
+
+
+def test_similar_with_arxiv_id_pushes_header_plus_recs(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    with patch("paper_s2.fetch_recommendations", return_value=[
+        _fake_s2_result("2401.00001"),
+        _fake_s2_result("2401.00002"),
+    ]):
+        handle_update(_msg("42", "/similar 2604.16044"), ctx)
+    # header + 2 results
+    assert len(ctx._fake.sent) == 3
+    assert "相似的 paper" in ctx._fake.sent[0][1]
+    assert "2401.00001" in ctx._fake.sent[1][1]
+
+
+def test_similar_resolves_by_title_substring(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    ctx.recent_papers = [{"arxiv_id": "2604.16044", "title": "Elucidating the SNR-t Bias"}]
+    with patch("paper_s2.fetch_recommendations", return_value=[_fake_s2_result("2401.00001")]) as mock_fn:
+        handle_update(_msg("42", "/similar Elucidating the SNR-t"), ctx)
+    # was called with the resolved arxiv_id (first positional arg)
+    assert mock_fn.call_args.args[0] == "2604.16044"
+
+
+def test_similar_no_results_replies_gracefully(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    with patch("paper_s2.fetch_recommendations", return_value=[]):
+        handle_update(_msg("42", "/similar 2604.99999"), ctx)
+    assert "沒推薦" in ctx._fake.sent[0][1] or "未索引" in ctx._fake.sent[0][1]
+
+
+def test_similar_unresolvable_ref_tells_user(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/similar some unrelated blob"), ctx)
+    assert "找不到" in ctx._fake.sent[0][1]
+
+
+# --- /refs -----------------------------------------------------------------
+
+
+def test_refs_without_arg_prints_usage(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/refs"), ctx)
+    assert "用法" in ctx._fake.sent[0][1]
+
+
+def test_refs_shows_both_referenced_and_citing_sections(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    with patch("paper_s2.fetch_references", return_value=[_fake_s2_result("2401.00001"), _fake_s2_result("2401.00002")]), \
+         patch("paper_s2.fetch_citations", return_value=[_fake_s2_result("2605.00001")]):
+        handle_update(_msg("42", "/refs 2604.16044"), ctx)
+    # 1 header + 2 refs + 1 header + 1 cite = 5 messages
+    assert len(ctx._fake.sent) == 5
+    assert "引用的 paper" in ctx._fake.sent[0][1]
+    assert "引用" in ctx._fake.sent[3][1]  # second header mentions citing
+
+
+def test_refs_handles_only_references(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    with patch("paper_s2.fetch_references", return_value=[_fake_s2_result("2401.00001")]), \
+         patch("paper_s2.fetch_citations", return_value=[]):
+        handle_update(_msg("42", "/refs 2604.16044"), ctx)
+    # 1 header + 1 ref, no citing section
+    assert len(ctx._fake.sent) == 2
+
+
+def test_refs_both_empty_replies_gracefully(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    with patch("paper_s2.fetch_references", return_value=[]), \
+         patch("paper_s2.fetch_citations", return_value=[]):
+        handle_update(_msg("42", "/refs 2604.99999"), ctx)
+    assert len(ctx._fake.sent) == 1
+    assert "citation graph" in ctx._fake.sent[0][1] or "未索引" in ctx._fake.sent[0][1]
+
+
+def test_refs_unresolvable_ref_tells_user(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/refs some unrelated blob"), ctx)
+    assert "找不到" in ctx._fake.sent[0][1]
+
+
 from bot import run_loop
 
 

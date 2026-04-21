@@ -377,6 +377,8 @@ _HELP_TEXT = (
     "<code>/claude &lt;q&gt;</code> — 這則強制用 claude\n"
     "<code>/gemini &lt;q&gt;</code> — 這則強制用 gemini\n"
     "<code>/search &lt;query&gt;</code> — arxiv 搜尋某領域最新 5 篇\n"
+    "<code>/similar &lt;paper&gt;</code> — 列出語意相似的 paper（S2 推薦）\n"
+    "<code>/refs &lt;paper&gt;</code> — 引用 / 被引用清單（S2 citation graph）\n"
     "<code>/notebook &lt;paper&gt;</code> — 拿 NotebookLM 用的 URL + markdown 檔\n"
     "直接傳訊息：用預設 backend 回答，帶歷史"
 )
@@ -430,8 +432,97 @@ def _handle_command(chat_id: str, text: str, ctx: Context) -> None:
     if cmd == "/search":
         _handle_search(chat_id, arg, ctx)
         return
+    if cmd == "/similar":
+        _handle_similar(chat_id, arg, ctx)
+        return
+    if cmd == "/refs":
+        _handle_refs(chat_id, arg, ctx)
+        return
 
     ctx.send_message(chat_id, f"未知指令：{cmd}\n{_HELP_TEXT}")
+
+
+def _push_paper_list(chat_id: str, header: str, papers: list[dict], ctx: Context) -> None:
+    """Send a header + one formatted message per paper."""
+    try:
+        ctx.send_message(chat_id, header)
+    except Exception as exc:
+        logger.warning("header send failed: %s", exc)
+        return
+    for i, p in enumerate(papers, start=1):
+        try:
+            ctx.send_message(chat_id, _build_search_result_message(i, p))
+        except Exception as exc:
+            logger.warning("paper send failed %s: %s", p.get("arxiv_id"), exc)
+
+
+def _handle_similar(chat_id: str, arg: str, ctx: Context) -> None:
+    """/similar <paper ref> — Semantic Scholar recommendation neighbours."""
+    if not arg.strip():
+        ctx.send_message(
+            chat_id,
+            "用法：<code>/similar 2604.16044</code> 或 <code>/similar 第 1 篇</code>",
+        )
+        return
+    aid = _resolve_paper_ref(arg, ctx)
+    if not aid:
+        ctx.send_message(chat_id, "找不到這篇 paper。試 arxiv_id 或完整標題。")
+        return
+    try:
+        ctx.send_chat_action(chat_id, "typing")
+    except Exception as exc:
+        logger.warning("send_chat_action failed: %s", exc)
+
+    from paper_s2 import fetch_recommendations
+    import html as _h
+
+    results = fetch_recommendations(aid, limit=5)
+    if not results:
+        ctx.send_message(
+            chat_id,
+            f"（S2 對 <code>{_h.escape(aid)}</code> 沒推薦資料，可能是太新未索引）",
+        )
+        return
+    header = f"🔁 <b>與 <code>{_h.escape(aid)}</code> 相似的 paper</b> — {len(results)} 篇"
+    _push_paper_list(chat_id, header, results, ctx)
+
+
+def _handle_refs(chat_id: str, arg: str, ctx: Context) -> None:
+    """/refs <paper ref> — list papers referenced by + papers citing the target."""
+    if not arg.strip():
+        ctx.send_message(chat_id, "用法：<code>/refs 2604.16044</code>")
+        return
+    aid = _resolve_paper_ref(arg, ctx)
+    if not aid:
+        ctx.send_message(chat_id, "找不到這篇 paper。試 arxiv_id 或完整標題。")
+        return
+    try:
+        ctx.send_chat_action(chat_id, "typing")
+    except Exception as exc:
+        logger.warning("send_chat_action failed: %s", exc)
+
+    from paper_s2 import fetch_citations, fetch_references
+    import html as _h
+
+    refs = fetch_references(aid, limit=5)
+    cites = fetch_citations(aid, limit=5)
+    if not refs and not cites:
+        ctx.send_message(
+            chat_id,
+            f"（S2 對 <code>{_h.escape(aid)}</code> 沒 citation graph，可能太新未索引）",
+        )
+        return
+
+    if refs:
+        header = (
+            f"📖 <b><code>{_h.escape(aid)}</code> 引用的 paper</b> — {len(refs)} 篇"
+        )
+        _push_paper_list(chat_id, header, refs, ctx)
+    if cites:
+        header = (
+            f"📎 <b>引用 <code>{_h.escape(aid)}</code> 的 paper</b> — {len(cites)} 篇"
+        )
+        _push_paper_list(chat_id, header, cites, ctx)
 
 
 _SEARCH_MAX_RESULTS = 5
