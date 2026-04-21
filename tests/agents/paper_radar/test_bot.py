@@ -342,6 +342,8 @@ from bot import (
     "text,expected",
     [
         ("介紹 2604.16044 這篇", "2604.16044"),
+        ("介紹2604.16044", "2604.16044"),        # no space, Chinese neighbour
+        ("2604.16044介紹一下", "2604.16044"),      # trailing Chinese
         ("arxiv.org/abs/2501.00001", "2501.00001"),
         ("2025.1234 and 2026.56789", "2025.1234"),  # first match wins
         ("no id here", None),
@@ -415,6 +417,37 @@ def test_handle_update_loads_fulltext_from_title_substring(tmp_db: Path, tmp_pat
     ctx.papers_md_dir = tmp_path
     handle_update(_msg("42", "講一下 Elucidating the SNR-t 那篇"), ctx)
     assert ctx._fake.llm_calls[0][2].get("paper_fulltext") == "FULLTEXT BY TITLE"
+
+
+def test_handle_update_fetches_markdown_on_demand_when_not_cached(tmp_db: Path, tmp_path: Path):
+    """User names an arxiv_id we've never cached — bot fetches PDF + converts + loads."""
+    ctx = _mk_ctx(tmp_db)
+    ctx.todays_papers = []
+    ctx.recent_papers = []
+    ctx.papers_md_dir = tmp_path
+
+    def fake_fetch(arxiv_id, out_dir):
+        p = Path(out_dir) / f"{arxiv_id}.md"
+        p.write_text("ON-DEMAND BODY", encoding="utf-8")
+        return p
+
+    with patch("paper_markdown.fetch_pdf_as_markdown", side_effect=fake_fetch):
+        handle_update(_msg("42", "介紹 2401.12345"), ctx)
+
+    assert ctx._fake.llm_calls[0][2].get("paper_fulltext") == "ON-DEMAND BODY"
+
+
+def test_handle_update_on_demand_fetch_failure_degrades_gracefully(tmp_db: Path, tmp_path: Path):
+    ctx = _mk_ctx(tmp_db)
+    ctx.todays_papers = []
+    ctx.recent_papers = []
+    ctx.papers_md_dir = tmp_path
+
+    with patch("paper_markdown.fetch_pdf_as_markdown", return_value=None):
+        handle_update(_msg("42", "介紹 2401.12345"), ctx)
+
+    # LLM still called, just without paper_fulltext
+    assert ctx._fake.llm_calls[0][2].get("paper_fulltext") is None
 
 
 from bot import run_loop

@@ -100,7 +100,11 @@ def detect_paper_index(text: str) -> int | None:
     return int(g) if g.isdigit() else _ZH_NUMS.get(g)
 
 
-_ARXIV_ID_RE = re.compile(r"\b(\d{4}\.\d{4,5})\b")
+# Python 3 \w is Unicode-aware, so 中文字 count as word chars and \b won't
+# trigger between a Chinese character and a digit (e.g. "介紹2604.16044" misses
+# with a \b-bounded pattern). Use digit-only negative lookarounds instead —
+# they still prevent matching the middle of a longer numeric run.
+_ARXIV_ID_RE = re.compile(r"(?<!\d)(\d{4}\.\d{4,5})(?!\d)")
 
 
 def detect_arxiv_id(text: str) -> str | None:
@@ -150,6 +154,33 @@ def load_paper_markdown_by_id(
     try:
         return path.read_text(encoding="utf-8")
     except FileNotFoundError:
+        return None
+
+
+def fetch_paper_markdown_on_demand(
+    arxiv_id: str, papers_md_dir: Path | str
+) -> str | None:
+    """Download + convert a paper to markdown on demand, then return its text.
+
+    Used when a user asks about an arxiv_id whose markdown isn't cached yet.
+    Wraps ``paper_markdown.fetch_pdf_as_markdown`` — the same code path the
+    daily radar uses — so the result lands at the normal cache location and
+    subsequent lookups hit instantly. Returns ``None`` on any failure (PDF
+    download, markitdown conversion) so the bot can degrade gracefully.
+    """
+    if not arxiv_id:
+        return None
+    try:
+        from paper_markdown import fetch_pdf_as_markdown
+        path = fetch_pdf_as_markdown(arxiv_id, papers_md_dir)
+    except Exception as exc:
+        logger.warning("on-demand fetch failed for %s: %s", arxiv_id, exc)
+        return None
+    if path is None:
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
         return None
 
 
@@ -351,6 +382,10 @@ def _handle_free_form(chat_id: str, text: str, backend: str, ctx: Context) -> No
             aid = detect_arxiv_id(text)
             if aid:
                 paper_fulltext = load_paper_markdown_by_id(aid, ctx.papers_md_dir)
+                if paper_fulltext is None:
+                    # Not cached yet — download + convert on demand so the bot
+                    # can answer deep questions about any paper the user names.
+                    paper_fulltext = fetch_paper_markdown_on_demand(aid, ctx.papers_md_dir)
                 if paper_fulltext is not None:
                     matched_id = aid
         if paper_fulltext is None and ctx.papers_md_dir is not None:
