@@ -117,3 +117,28 @@ def send_audio(
             timeout=120,
         )
     resp.raise_for_status()
+
+
+def send_document(
+    token: str,
+    chat_id: str,
+    doc_path: str,
+    filename: str | None = None,
+    caption: str | None = None,
+    parse_mode: str | None = None,
+) -> None:
+    """Send a file via Telegram sendDocument (max 50MB per Bot API)."""
+    data: dict = {"chat_id": chat_id}
+    if caption:
+        data["caption"] = caption[:1024]
+        if parse_mode:
+            data["parse_mode"] = parse_mode
+    with open(doc_path, "rb") as fp:
+        files = {"document": (filename, fp) if filename else fp}
+        resp = requests.post(
+            _API.format(token=token, method="sendDocument"),
+            data=data,
+            files=files,
+            timeout=120,
+        )
+    resp.raise_for_status()
