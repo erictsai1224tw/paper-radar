@@ -715,6 +715,74 @@ def test_refs_unresolvable_ref_tells_user(tmp_db: Path):
     assert "找不到" in ctx._fake.sent[0][1]
 
 
+# --- command-result logging to chat_history --------------------------------
+
+
+def test_search_results_logged_to_chat_history(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    results = [
+        {
+            "arxiv_id": "2401.00001", "title": "Paper about RTL synthesis",
+            "abstract": "a", "authors": [], "published": "",
+            "arxiv_url": "https://arxiv.org/abs/2401.00001",
+        },
+        {
+            "arxiv_id": "2401.00002", "title": "RTL aware training",
+            "abstract": "b", "authors": [], "published": "",
+            "arxiv_url": "https://arxiv.org/abs/2401.00002",
+        },
+    ]
+    with patch("paper_arxiv_search.search_arxiv", return_value=results):
+        handle_update(_msg("42", "/search RTL"), ctx)
+
+    history = get_history(tmp_db, "42", limit=10)
+    assert [h["role"] for h in history] == ["user", "assistant"]
+    assert history[0]["text"] == "/search RTL"
+    # assistant turn lists both arxiv_ids + titles so follow-up has context
+    assert "2401.00001" in history[1]["text"]
+    assert "RTL synthesis" in history[1]["text"]
+    assert "2401.00002" in history[1]["text"]
+
+
+def test_similar_results_logged_to_chat_history(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    with patch("paper_s2.fetch_recommendations", return_value=[
+        {"arxiv_id": "2401.00001", "title": "neighbour", "abstract": "", "authors": [],
+         "arxiv_url": "https://arxiv.org/abs/2401.00001"},
+    ]):
+        handle_update(_msg("42", "/similar 2604.16044"), ctx)
+
+    history = get_history(tmp_db, "42", limit=10)
+    assert history[0]["text"] == "/similar 2604.16044"
+    assert "2401.00001" in history[1]["text"]
+    assert "neighbour" in history[1]["text"]
+
+
+def test_refs_results_logged_to_chat_history_covering_both_sections(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    refs = [{"arxiv_id": "2301.00001", "title": "ref one", "abstract": "", "authors": [],
+             "arxiv_url": "https://arxiv.org/abs/2301.00001"}]
+    cites = [{"arxiv_id": "2605.00001", "title": "cites one", "abstract": "", "authors": [],
+              "arxiv_url": "https://arxiv.org/abs/2605.00001"}]
+    with patch("paper_s2.fetch_references", return_value=refs), \
+         patch("paper_s2.fetch_citations", return_value=cites):
+        handle_update(_msg("42", "/refs 2604.16044"), ctx)
+
+    history = get_history(tmp_db, "42", limit=10)
+    assert history[0]["text"] == "/refs 2604.16044"
+    combined = history[1]["text"]
+    assert "2301.00001" in combined and "ref one" in combined
+    assert "2605.00001" in combined and "cites one" in combined
+
+
+def test_search_with_no_results_does_not_pollute_history(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    with patch("paper_arxiv_search.search_arxiv", return_value=[]):
+        handle_update(_msg("42", "/search nothing-matches-here"), ctx)
+    # nothing to log when nothing to show
+    assert get_history(tmp_db, "42", limit=10) == []
+
+
 from bot import run_loop
 
 
