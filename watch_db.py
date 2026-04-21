@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS watch_seen (
     seen_at    TEXT NOT NULL,
     PRIMARY KEY (watch_name, arxiv_id)
 );
+CREATE INDEX IF NOT EXISTS idx_watch_seen_name ON watch_seen(watch_name);
 """
 
 
