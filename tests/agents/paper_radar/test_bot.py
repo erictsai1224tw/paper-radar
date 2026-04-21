@@ -331,6 +331,92 @@ def test_handle_update_no_fulltext_when_no_index_in_text(tmp_db: Path, tmp_path:
     assert ctx._fake.llm_calls[0][2].get("paper_fulltext") is None
 
 
+from bot import (
+    detect_arxiv_id,
+    detect_paper_by_title,
+    load_paper_markdown_by_id,
+)
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("介紹 2604.16044 這篇", "2604.16044"),
+        ("arxiv.org/abs/2501.00001", "2501.00001"),
+        ("2025.1234 and 2026.56789", "2025.1234"),  # first match wins
+        ("no id here", None),
+        ("12345.6789", None),  # wrong digit counts
+        ("1234.56", None),     # suffix too short
+    ],
+)
+def test_detect_arxiv_id(text, expected):
+    assert detect_arxiv_id(text) == expected
+
+
+def test_load_paper_markdown_by_id_hit(tmp_path: Path):
+    (tmp_path / "2604.16044.md").write_text("paper body", encoding="utf-8")
+    assert load_paper_markdown_by_id("2604.16044", tmp_path) == "paper body"
+
+
+def test_load_paper_markdown_by_id_miss(tmp_path: Path):
+    assert load_paper_markdown_by_id("2604.99999", tmp_path) is None
+
+
+def test_load_paper_markdown_by_id_empty_arxiv_id(tmp_path: Path):
+    assert load_paper_markdown_by_id("", tmp_path) is None
+
+
+def test_detect_paper_by_title_matches_long_substring():
+    papers = [
+        {"arxiv_id": "x1", "title": "Elucidating the SNR-t Bias of Diffusion Probabilistic Models"},
+        {"arxiv_id": "x2", "title": "Another Random Paper"},
+    ]
+    # a 15-char substring
+    text = "想問 Elucidating the SNR 那篇講什麼"
+    assert detect_paper_by_title(text, papers) == "x1"
+
+
+def test_detect_paper_by_title_case_insensitive():
+    papers = [{"arxiv_id": "x1", "title": "PersonaVLM: Long-Term Personalization"}]
+    text = "personavlm: long-term per 講了什麼?"
+    assert detect_paper_by_title(text, papers) == "x1"
+
+
+def test_detect_paper_by_title_short_substring_does_not_match():
+    papers = [{"arxiv_id": "x1", "title": "Very Short"}]
+    # 'Short' alone = 5 chars, below the 12-char floor → no match
+    assert detect_paper_by_title("the word short", papers) is None
+
+
+def test_detect_paper_by_title_empty_input_or_papers():
+    assert detect_paper_by_title("", []) is None
+    assert detect_paper_by_title("any text", []) is None
+    assert detect_paper_by_title("", [{"arxiv_id": "x", "title": "y"}]) is None
+
+
+def test_handle_update_loads_fulltext_from_arxiv_id_even_if_not_in_todays(tmp_db: Path, tmp_path: Path):
+    (tmp_path / "2604.16044.md").write_text("YESTERDAY FULLTEXT", encoding="utf-8")
+    ctx = _mk_ctx(tmp_db)
+    # today's batch doesn't include 2604.16044 — only recent_papers has it
+    ctx.todays_papers = [{"arxiv_id": "2604.00000", "title": "new paper"}]
+    ctx.recent_papers = [{"arxiv_id": "2604.16044", "title": "Old Paper Title Here"}]
+    ctx.papers_md_dir = tmp_path
+    handle_update(_msg("42", "介紹 2604.16044"), ctx)
+    assert ctx._fake.llm_calls[0][2].get("paper_fulltext") == "YESTERDAY FULLTEXT"
+
+
+def test_handle_update_loads_fulltext_from_title_substring(tmp_db: Path, tmp_path: Path):
+    (tmp_path / "2604.16044.md").write_text("FULLTEXT BY TITLE", encoding="utf-8")
+    ctx = _mk_ctx(tmp_db)
+    ctx.todays_papers = []
+    ctx.recent_papers = [
+        {"arxiv_id": "2604.16044", "title": "Elucidating the SNR-t Bias of Diffusion Models"},
+    ]
+    ctx.papers_md_dir = tmp_path
+    handle_update(_msg("42", "講一下 Elucidating the SNR-t 那篇"), ctx)
+    assert ctx._fake.llm_calls[0][2].get("paper_fulltext") == "FULLTEXT BY TITLE"
+
+
 from bot import run_loop
 
 

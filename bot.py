@@ -100,13 +100,50 @@ def detect_paper_index(text: str) -> int | None:
     return int(g) if g.isdigit() else _ZH_NUMS.get(g)
 
 
-def load_paper_fulltext(
-    index: int, papers: list[dict], papers_md_dir: Path | str
-) -> str | None:
-    """Read papers_md/{arxiv_id}.md for the 1-based N-th paper; None if unavailable."""
-    if not (1 <= index <= len(papers)):
+_ARXIV_ID_RE = re.compile(r"\b(\d{4}\.\d{4,5})\b")
+
+
+def detect_arxiv_id(text: str) -> str | None:
+    """Find an arxiv_id like '2604.16044' anywhere in the message."""
+    m = _ARXIV_ID_RE.search(text)
+    return m.group(1) if m else None
+
+
+def detect_paper_by_title(text: str, papers: list[dict]) -> str | None:
+    """Return the arxiv_id whose title has the longest substring overlap with ``text``.
+
+    Checks each paper's title against the user text (case-insensitive). Requires
+    at least 12 contiguous characters of overlap (lowercased) so stray mentions
+    don't trigger false positives. Returns ``None`` when nothing qualifies.
+    """
+    if not text or not papers:
         return None
-    arxiv_id = papers[index - 1].get("arxiv_id")
+    t_lower = text.lower()
+    best_id: str | None = None
+    best_len = 11  # floor — need > 11 chars to beat
+    for p in papers:
+        title = (p.get("title") or "").strip()
+        if not title:
+            continue
+        title_lower = title.lower()
+        # cheap heuristic: longest common substring via a simple sliding check —
+        # avoid importing difflib for such a small comparison
+        for size in range(min(len(title_lower), 80), best_len, -1):
+            for i in range(len(title_lower) - size + 1):
+                chunk = title_lower[i:i + size]
+                if chunk in t_lower:
+                    best_len = size
+                    best_id = p.get("arxiv_id")
+                    break
+            if best_len == size and best_id == p.get("arxiv_id"):
+                break
+    return best_id
+
+
+def load_paper_markdown_by_id(
+    arxiv_id: str, papers_md_dir: Path | str
+) -> str | None:
+    """Read papers_md/{arxiv_id}.md if it exists. None otherwise."""
     if not arxiv_id:
         return None
     path = Path(papers_md_dir) / f"{arxiv_id}.md"
@@ -116,8 +153,18 @@ def load_paper_fulltext(
         return None
 
 
+def load_paper_fulltext(
+    index: int, papers: list[dict], papers_md_dir: Path | str
+) -> str | None:
+    """Read papers_md/{arxiv_id}.md for the 1-based N-th paper; None if unavailable."""
+    if not (1 <= index <= len(papers)):
+        return None
+    arxiv_id = papers[index - 1].get("arxiv_id")
+    return load_paper_markdown_by_id(arxiv_id, papers_md_dir)
+
+
 def load_todays_papers() -> list[dict]:
-    """Load the last paper_radar push so the bot can answer 『介紹第 N 篇』."""
+    """Load the last paper_radar push (just today's batch from summaries.json)."""
     try:
         data = json.loads(SUMMARIES_PATH.read_text(encoding="utf-8"))
         return data if isinstance(data, list) else []
@@ -126,6 +173,20 @@ def load_todays_papers() -> list[dict]:
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("load_todays_papers failed: %s", exc)
         return []
+
+
+def load_recent_papers(days: int = 7) -> list[dict]:
+    """Return papers from the last ``days`` days (archive + today's batch), deduped."""
+    from weekly_rollup import ARCHIVE_PATH, load_recent_papers as _load_archive
+    recent = _load_archive(ARCHIVE_PATH, days=days)
+    # merge today's summaries (which may not yet be in archive mid-pipeline)
+    recent.extend(load_todays_papers())
+    seen: dict[str, dict] = {}
+    for p in recent:
+        aid = p.get("arxiv_id")
+        if aid:
+            seen[aid] = p  # later wins — that's fine
+    return list(seen.values())
 
 
 def load_whitelist() -> set[str]:
@@ -185,12 +246,15 @@ class Context:
     send_chat_action: Callable[[str, str], None]
     ask_llm: Callable[..., str]
     typing_interval: float = 4.0
-    todays_papers: list[dict] = None  # populated per ctx build
+    todays_papers: list[dict] = None         # today's batch — drives '第 N 篇'
+    recent_papers: list[dict] = None         # last 7 days — drives title + id lookup
     papers_md_dir: Path | None = None
 
     def __post_init__(self) -> None:
         if self.todays_papers is None:
             self.todays_papers = []
+        if self.recent_papers is None:
+            self.recent_papers = []
 
 
 _HELP_TEXT = (
@@ -277,12 +341,27 @@ def _handle_free_form(chat_id: str, text: str, backend: str, ctx: Context) -> No
         history = get_history(ctx.db_path, chat_id, limit=ctx.history_turns * 2)
 
         paper_fulltext: str | None = None
+        matched_id: str | None = None
         idx = detect_paper_index(text)
         if idx is not None and ctx.papers_md_dir is not None:
             paper_fulltext = load_paper_fulltext(idx, ctx.todays_papers, ctx.papers_md_dir)
+            if paper_fulltext is not None and 1 <= idx <= len(ctx.todays_papers):
+                matched_id = ctx.todays_papers[idx - 1].get("arxiv_id")
+        if paper_fulltext is None and ctx.papers_md_dir is not None:
+            aid = detect_arxiv_id(text)
+            if aid:
+                paper_fulltext = load_paper_markdown_by_id(aid, ctx.papers_md_dir)
+                if paper_fulltext is not None:
+                    matched_id = aid
+        if paper_fulltext is None and ctx.papers_md_dir is not None:
+            aid = detect_paper_by_title(text, ctx.recent_papers)
+            if aid:
+                paper_fulltext = load_paper_markdown_by_id(aid, ctx.papers_md_dir)
+                if paper_fulltext is not None:
+                    matched_id = aid
         logger.info(
-            "chat=%s backend=%s paper_idx=%s fulltext_chars=%s",
-            chat_id, backend, idx, len(paper_fulltext) if paper_fulltext else 0,
+            "chat=%s backend=%s matched_id=%s fulltext_chars=%s",
+            chat_id, backend, matched_id, len(paper_fulltext) if paper_fulltext else 0,
         )
 
         try:
@@ -366,8 +445,10 @@ def _configure_logging() -> None:
 
 def _build_ctx() -> Context:
     token = os.environ["TELEGRAM_QA_BOT_TOKEN"]
-    # Re-read summaries.json each ctx build so new pushes surface without restart.
-    papers = load_todays_papers()
+    # Re-read summaries + 7-day archive each ctx build so fresh pushes and older
+    # papers (still cached in papers_md/) are both reachable.
+    today_papers = load_todays_papers()
+    recent = load_recent_papers(days=7)
     return Context(
         db_path=BOT_DB_PATH,
         whitelist=load_whitelist(),
@@ -377,7 +458,8 @@ def _build_ctx() -> Context:
         send_message=lambda cid, txt: telegram_client.send_message(token, cid, txt),
         send_chat_action=lambda cid, a: telegram_client.send_chat_action(token, cid, a),
         ask_llm=ask_llm,
-        todays_papers=papers,
+        todays_papers=today_papers,
+        recent_papers=recent,
         papers_md_dir=PAPERS_MD_DIR,
     )
 
