@@ -360,6 +360,7 @@ class Context:
     todays_papers: list[dict] = None         # today's batch — drives '第 N 篇'
     recent_papers: list[dict] = None         # last 7 days — drives title + id lookup
     papers_md_dir: Path | None = None
+    send_document: Callable[..., None] | None = None   # for /notebook
 
     def __post_init__(self) -> None:
         if self.todays_papers is None:
@@ -375,6 +376,7 @@ _HELP_TEXT = (
     "<code>/backend</code> — 顯示目前預設 backend\n"
     "<code>/claude &lt;q&gt;</code> — 這則強制用 claude\n"
     "<code>/gemini &lt;q&gt;</code> — 這則強制用 gemini\n"
+    "<code>/notebook &lt;paper&gt;</code> — 拿 NotebookLM 用的 URL + markdown 檔\n"
     "直接傳訊息：用預設 backend 回答，帶歷史"
 )
 
@@ -421,8 +423,86 @@ def _handle_command(chat_id: str, text: str, ctx: Context) -> None:
         backend = cmd[1:]
         _handle_free_form(chat_id, arg, backend, ctx)
         return
+    if cmd == "/notebook":
+        _handle_notebook(chat_id, arg, ctx)
+        return
 
     ctx.send_message(chat_id, f"未知指令：{cmd}\n{_HELP_TEXT}")
+
+
+def _resolve_paper_ref(text: str, ctx: Context) -> str | None:
+    """Resolve a paper reference from message text using bot's detectors.
+
+    Tries, in order: '第 N 篇' (today's batch) → arxiv_id → title substring.
+    Returns the arxiv_id or None.
+    """
+    idx = detect_paper_index(text)
+    if idx is not None and 1 <= idx <= len(ctx.todays_papers):
+        aid = ctx.todays_papers[idx - 1].get("arxiv_id")
+        if aid:
+            return aid
+    aid = detect_arxiv_id(text)
+    if aid:
+        return aid
+    return detect_paper_by_title(text, ctx.recent_papers)
+
+
+def _build_notebook_message(paper: dict | None, arxiv_id: str) -> str:
+    """Compose the URL bundle for the NotebookLM source list."""
+    import html as _h
+
+    lines = ["📓 <b>NotebookLM 餵給你：</b>\n"]
+    lines.append(f'📄 PDF: <a href="https://arxiv.org/pdf/{_h.escape(arxiv_id, quote=True)}">arxiv.org/pdf/{_h.escape(arxiv_id)}</a>')
+    lines.append(f'📖 Abstract: <a href="https://arxiv.org/abs/{_h.escape(arxiv_id, quote=True)}">arxiv.org/abs/{_h.escape(arxiv_id)}</a>')
+    lines.append(f'🤗 HF: <a href="https://huggingface.co/papers/{_h.escape(arxiv_id, quote=True)}">huggingface.co/papers/{_h.escape(arxiv_id)}</a>')
+    if paper and (gh := (paper.get("github_url") or "").strip()):
+        gh_e = _h.escape(gh, quote=True)
+        lines.append(f'💻 Code: <a href="{gh_e}">{_h.escape(gh)}</a>')
+    lines.append("")
+    lines.append("上面連結都貼進 NotebookLM「Add source」，再把下面的 .md 檔拉進去當 source，就能在 NotebookLM 裡跟這篇深度對話 / 生 audio overview。")
+    return "\n".join(lines)
+
+
+def _handle_notebook(chat_id: str, arg: str, ctx: Context) -> None:
+    """Hand the user a NotebookLM-ready source bundle: URLs + cached markdown file."""
+    if not arg.strip():
+        ctx.send_message(chat_id, "用法：<code>/notebook 2604.16044</code> 或 <code>/notebook 第 1 篇</code>")
+        return
+
+    aid = _resolve_paper_ref(arg, ctx)
+    if not aid:
+        ctx.send_message(chat_id, "找不到這篇。試 <code>/notebook &lt;arxiv_id&gt;</code> 或完整標題。")
+        return
+
+    # Locate a matching paper metadata (github_url etc.) if we have it.
+    paper_meta: dict | None = None
+    for p in (ctx.todays_papers or []) + (ctx.recent_papers or []):
+        if p.get("arxiv_id") == aid:
+            paper_meta = p
+            break
+
+    # Send the URL bundle as an HTML message.
+    try:
+        ctx.send_message(chat_id, _build_notebook_message(paper_meta, aid))
+    except Exception as exc:
+        logger.warning("notebook message failed: %s", exc)
+        return
+
+    if ctx.papers_md_dir is None or ctx.send_document is None:
+        return
+
+    # Load / fetch the markdown file so the user can attach it to NotebookLM.
+    md_path = Path(ctx.papers_md_dir) / f"{aid}.md"
+    if not md_path.exists():
+        text = fetch_paper_markdown_on_demand(aid, ctx.papers_md_dir)
+        if text is None or not md_path.exists():
+            ctx.send_message(chat_id, "（抓取 PDF 失敗，只能給 URL — 你直接丟 arxiv PDF 給 NotebookLM 也行）")
+            return
+
+    try:
+        ctx.send_document(chat_id, str(md_path), filename=f"{aid}.md")
+    except Exception as exc:
+        logger.warning("notebook send_document failed: %s", exc)
 
 
 def _typing_pump(chat_id: str, ctx: Context, stop: "threading.Event") -> None:
@@ -577,6 +657,9 @@ def _build_ctx() -> Context:
         todays_papers=today_papers,
         recent_papers=recent,
         papers_md_dir=PAPERS_MD_DIR,
+        send_document=lambda cid, path, filename=None: telegram_client.send_document(
+            token, cid, path, filename=filename,
+        ),
     )
 
 

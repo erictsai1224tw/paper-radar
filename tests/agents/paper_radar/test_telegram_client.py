@@ -177,3 +177,29 @@ def test_answer_callback_query_omits_empty_text():
         mock_post.return_value = _mock_resp()
         answer_callback_query("tok", "cbq1")
     assert mock_post.call_args.kwargs["json"] == {"callback_query_id": "cbq1"}
+
+
+from telegram_client import send_document
+
+
+def test_send_document_posts_file_with_filename(tmp_path):
+    doc = tmp_path / "paper.md"
+    doc.write_text("# hello\nworld", encoding="utf-8")
+    with patch("telegram_client.requests.post") as mock_post:
+        mock_post.return_value = _mock_resp()
+        send_document("tok", "42", str(doc), filename="2604.16044.md")
+
+    assert mock_post.call_args.args[0] == "https://api.telegram.org/bottok/sendDocument"
+    files = mock_post.call_args.kwargs["files"]
+    assert "document" in files
+    # when filename passed, requests gets a (name, fileobj) tuple
+    assert files["document"][0] == "2604.16044.md"
+
+
+def test_send_document_posts_caption_when_given(tmp_path):
+    doc = tmp_path / "x.md"
+    doc.write_bytes(b"body")
+    with patch("telegram_client.requests.post") as mock_post:
+        mock_post.return_value = _mock_resp()
+        send_document("tok", "42", str(doc), caption="hi")
+    assert mock_post.call_args.kwargs["data"]["caption"] == "hi"

@@ -137,6 +137,7 @@ class FakeContext:
     sent: list[tuple] = field(default_factory=list)
     actions: list[tuple] = field(default_factory=list)
     llm_calls: list[tuple] = field(default_factory=list)
+    docs: list[tuple] = field(default_factory=list)
     llm_reply: str = "llm-reply"
     llm_error: Exception | None = None
 
@@ -157,6 +158,9 @@ def _mk_ctx(tmp_db: Path, **overrides) -> Context:
             raise fake.llm_error
         return fake.llm_reply
 
+    def send_doc(chat_id, path, filename=None):
+        fake.docs.append((chat_id, path, filename))
+
     ctx = Context(
         db_path=tmp_db,
         whitelist={"42"},
@@ -167,6 +171,7 @@ def _mk_ctx(tmp_db: Path, **overrides) -> Context:
         send_chat_action=action,
         ask_llm=ask,
         typing_interval=overrides.get("typing_interval", 4.0),
+        send_document=send_doc,
     )
     ctx._fake = fake  # type: ignore[attr-defined]
     return ctx
@@ -448,6 +453,93 @@ def test_handle_update_on_demand_fetch_failure_degrades_gracefully(tmp_db: Path,
 
     # LLM still called, just without paper_fulltext
     assert ctx._fake.llm_calls[0][2].get("paper_fulltext") is None
+
+
+# --- /notebook command -----------------------------------------------------
+
+
+def test_notebook_without_arg_prints_usage(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/notebook"), ctx)
+    assert len(ctx._fake.sent) == 1
+    assert "用法" in ctx._fake.sent[0][1]
+    assert ctx._fake.docs == []
+
+
+def test_notebook_with_arxiv_id_sends_urls_plus_document(tmp_db: Path, tmp_path: Path):
+    (tmp_path / "2604.16044.md").write_text("paper body", encoding="utf-8")
+    ctx = _mk_ctx(tmp_db)
+    ctx.papers_md_dir = tmp_path
+    ctx.recent_papers = [{
+        "arxiv_id": "2604.16044",
+        "title": "SNR-t Bias",
+        "github_url": "https://github.com/foo/bar",
+    }]
+    handle_update(_msg("42", "/notebook 2604.16044"), ctx)
+
+    assert len(ctx._fake.sent) == 1
+    msg = ctx._fake.sent[0][1]
+    assert "arxiv.org/pdf/2604.16044" in msg
+    assert "arxiv.org/abs/2604.16044" in msg
+    assert "huggingface.co/papers/2604.16044" in msg
+    assert "github.com/foo/bar" in msg
+
+    assert ctx._fake.docs == [("42", str(tmp_path / "2604.16044.md"), "2604.16044.md")]
+
+
+def test_notebook_by_title_substring(tmp_db: Path, tmp_path: Path):
+    (tmp_path / "2604.16044.md").write_text("body", encoding="utf-8")
+    ctx = _mk_ctx(tmp_db)
+    ctx.papers_md_dir = tmp_path
+    ctx.recent_papers = [{
+        "arxiv_id": "2604.16044",
+        "title": "Elucidating the SNR-t Bias of Diffusion Models",
+    }]
+    handle_update(_msg("42", "/notebook Elucidating the SNR-t"), ctx)
+    assert ctx._fake.docs and ctx._fake.docs[0][1].endswith("2604.16044.md")
+
+
+def test_notebook_by_paper_index(tmp_db: Path, tmp_path: Path):
+    (tmp_path / "2604.16044.md").write_text("body", encoding="utf-8")
+    ctx = _mk_ctx(tmp_db)
+    ctx.papers_md_dir = tmp_path
+    ctx.todays_papers = [{"arxiv_id": "2604.16044", "title": "P"}]
+    handle_update(_msg("42", "/notebook 第 1 篇"), ctx)
+    assert ctx._fake.docs and ctx._fake.docs[0][1].endswith("2604.16044.md")
+
+
+def test_notebook_unresolvable_ref_tells_user(tmp_db: Path, tmp_path: Path):
+    ctx = _mk_ctx(tmp_db)
+    ctx.papers_md_dir = tmp_path
+    handle_update(_msg("42", "/notebook some random text nothing to match"), ctx)
+    assert "找不到" in ctx._fake.sent[0][1]
+    assert ctx._fake.docs == []
+
+
+def test_notebook_fetches_markdown_on_demand_when_missing(tmp_db: Path, tmp_path: Path):
+    ctx = _mk_ctx(tmp_db)
+    ctx.papers_md_dir = tmp_path
+
+    def fake_fetch(arxiv_id, out_dir):
+        p = Path(out_dir) / f"{arxiv_id}.md"
+        p.write_text("on-demand body", encoding="utf-8")
+        return p
+
+    with patch("paper_markdown.fetch_pdf_as_markdown", side_effect=fake_fetch):
+        handle_update(_msg("42", "/notebook 2401.12345"), ctx)
+
+    assert ctx._fake.docs and ctx._fake.docs[0][1].endswith("2401.12345.md")
+
+
+def test_notebook_omits_code_url_when_missing(tmp_db: Path, tmp_path: Path):
+    (tmp_path / "2604.16044.md").write_text("body", encoding="utf-8")
+    ctx = _mk_ctx(tmp_db)
+    ctx.papers_md_dir = tmp_path
+    ctx.recent_papers = [{
+        "arxiv_id": "2604.16044", "title": "x", "github_url": "",
+    }]
+    handle_update(_msg("42", "/notebook 2604.16044"), ctx)
+    assert "Code:" not in ctx._fake.sent[0][1]
 
 
 from bot import run_loop
