@@ -376,6 +376,7 @@ _HELP_TEXT = (
     "<code>/backend</code> — 顯示目前預設 backend\n"
     "<code>/claude &lt;q&gt;</code> — 這則強制用 claude\n"
     "<code>/gemini &lt;q&gt;</code> — 這則強制用 gemini\n"
+    "<code>/search &lt;query&gt;</code> — arxiv 搜尋某領域最新 5 篇\n"
     "<code>/notebook &lt;paper&gt;</code> — 拿 NotebookLM 用的 URL + markdown 檔\n"
     "直接傳訊息：用預設 backend 回答，帶歷史"
 )
@@ -426,8 +427,81 @@ def _handle_command(chat_id: str, text: str, ctx: Context) -> None:
     if cmd == "/notebook":
         _handle_notebook(chat_id, arg, ctx)
         return
+    if cmd == "/search":
+        _handle_search(chat_id, arg, ctx)
+        return
 
     ctx.send_message(chat_id, f"未知指令：{cmd}\n{_HELP_TEXT}")
+
+
+_SEARCH_MAX_RESULTS = 5
+_SEARCH_ABSTRACT_SNIPPET = 260
+
+
+def _build_search_result_message(idx: int, paper: dict) -> str:
+    import html as _h
+    title = _h.escape(paper["title"])
+    abstract_raw = paper.get("abstract") or ""
+    if len(abstract_raw) > _SEARCH_ABSTRACT_SNIPPET:
+        abstract_raw = abstract_raw[:_SEARCH_ABSTRACT_SNIPPET].rstrip() + "…"
+    abstract = _h.escape(abstract_raw)
+    authors = paper.get("authors") or []
+    auth_text = ", ".join(_h.escape(a) for a in authors[:3])
+    if len(authors) > 3:
+        auth_text += " et al."
+    published = (paper.get("published") or "")[:10]  # YYYY-MM-DD
+    arxiv_id = paper["arxiv_id"]
+    url = _h.escape(paper.get("arxiv_url", f"https://arxiv.org/abs/{arxiv_id}"), quote=True)
+
+    lines = [f"<b>{idx}. {title}</b>"]
+    if auth_text:
+        lines.append(f"<i>{auth_text}</i>")
+    if published:
+        lines.append(f"📅 {published}")
+    if abstract:
+        lines.append("")
+        lines.append(abstract)
+    lines.append("")
+    lines.append(
+        f'<a href="{url}">{_h.escape(arxiv_id)}</a>  '
+        f'—  深入用 <code>介紹 {_h.escape(arxiv_id)}</code>  '
+        f'或 <code>/notebook {_h.escape(arxiv_id)}</code>'
+    )
+    return "\n".join(lines)
+
+
+def _handle_search(chat_id: str, query: str, ctx: Context) -> None:
+    """Search arxiv for the given free-text query, push up to 5 most recent."""
+    if not query.strip():
+        ctx.send_message(chat_id, "用法：<code>/search efficient diffusion sampling</code>")
+        return
+
+    try:
+        ctx.send_chat_action(chat_id, "typing")
+    except Exception as exc:
+        logger.warning("send_chat_action failed: %s", exc)
+
+    from paper_arxiv_search import search_arxiv
+
+    results = search_arxiv(query, max_results=_SEARCH_MAX_RESULTS)
+    if not results:
+        ctx.send_message(chat_id, f"（arxiv 搜 <code>{query}</code> 沒結果或 API 被限流，稍後再試）")
+        return
+
+    import html as _h
+    header = f"🔎 <b>arxiv 搜尋：</b><code>{_h.escape(query)}</code> — {len(results)} 篇最新"
+    try:
+        ctx.send_message(chat_id, header)
+    except Exception as exc:
+        logger.warning("search header failed: %s", exc)
+        return
+
+    for i, paper in enumerate(results, start=1):
+        msg = _build_search_result_message(i, paper)
+        try:
+            ctx.send_message(chat_id, msg)
+        except Exception as exc:
+            logger.warning("search result %s failed: %s", paper.get("arxiv_id"), exc)
 
 
 def _resolve_paper_ref(text: str, ctx: Context) -> str | None:
