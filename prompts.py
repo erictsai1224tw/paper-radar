@@ -132,6 +132,29 @@ WEEKLY_CLUSTER_PROMPT = """以下是過去 7 天由 paper_radar 推送過的 AI 
 """
 
 
+INTEREST_RANK_PROMPT = """以下是今日 HF daily papers 的候選清單。每篇格式：
+序號. [arxiv_id] "title"  — tldr (tags: ...)
+
+{paper_block}
+
+使用者的研究興趣（自由文字）：
+---
+{interest}
+---
+
+任務：從這批候選中挑出最符合興趣的 {top_n} 篇，按相關性由高到低排序。
+只回 JSON（不要 ``` fence）：
+{{
+  "ordered_arxiv_ids": ["id1", "id2", ...]
+}}
+
+要求：
+- 嚴格從候選中挑，不要編造新 arxiv_id
+- 若符合的少於 {top_n} 篇，就少寫幾個，不要硬湊
+- 不要解釋、不要額外文字
+"""
+
+
 EXPLAIN_FIGURE_PROMPT = """這是一篇 AI paper 的 Figure 1 原始 caption：
 
 Title: {title}

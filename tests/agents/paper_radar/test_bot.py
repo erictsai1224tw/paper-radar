@@ -783,6 +783,92 @@ def test_search_with_no_results_does_not_pollute_history(tmp_db: Path):
     assert get_history(tmp_db, "42", limit=10) == []
 
 
+# --- /watch family ---------------------------------------------------------
+
+
+def test_watch_add_without_args_prints_usage(tmp_db: Path):
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/watch"), ctx)
+    assert "用法" in ctx._fake.sent[0][1]
+
+
+def test_watch_add_creates_entry(tmp_db: Path, tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("bot.WATCH_DB_PATH", tmp_path / "w.sqlite")
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/watch rl reinforcement learning"), ctx)
+    assert "新增 watch" in ctx._fake.sent[0][1]
+
+    from watch_db import list_watches
+    watches = list_watches(tmp_path / "w.sqlite")
+    assert len(watches) == 1
+    assert watches[0]["name"] == "rl"
+    assert watches[0]["query"] == "reinforcement learning"
+
+
+def test_watch_add_updates_existing(tmp_db: Path, tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("bot.WATCH_DB_PATH", tmp_path / "w.sqlite")
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/watch rl old query"), ctx)
+    handle_update(_msg("42", "/watch rl new query"), ctx)
+    assert "更新 watch" in ctx._fake.sent[-1][1]
+
+
+def test_watches_list_empty(tmp_db: Path, tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("bot.WATCH_DB_PATH", tmp_path / "w.sqlite")
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/watches"), ctx)
+    assert "還沒有 watch" in ctx._fake.sent[0][1]
+
+
+def test_watches_list_shows_entries(tmp_db: Path, tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("bot.WATCH_DB_PATH", tmp_path / "w.sqlite")
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/watch rl reinforcement"), ctx)
+    handle_update(_msg("42", "/watch cv vision"), ctx)
+    ctx._fake.sent.clear()
+    handle_update(_msg("42", "/watches"), ctx)
+    text = ctx._fake.sent[0][1]
+    assert "訂閱清單" in text
+    assert "rl" in text and "cv" in text
+
+
+def test_unwatch_removes_entry(tmp_db: Path, tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("bot.WATCH_DB_PATH", tmp_path / "w.sqlite")
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/watch rl q"), ctx)
+    handle_update(_msg("42", "/unwatch rl"), ctx)
+    assert "已刪除" in ctx._fake.sent[-1][1]
+    from watch_db import list_watches
+    assert list_watches(tmp_path / "w.sqlite") == []
+
+
+def test_unwatch_nonexistent_reports(tmp_db: Path, tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("bot.WATCH_DB_PATH", tmp_path / "w.sqlite")
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/unwatch nope"), ctx)
+    assert "沒有這個" in ctx._fake.sent[0][1]
+
+
+def test_watch_run_fires_runner(tmp_db: Path, tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("bot.WATCH_DB_PATH", tmp_path / "w.sqlite")
+    monkeypatch.setenv("TELEGRAM_NOTIFY_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_NOTIFY_CHAT_ID", "chat42")
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/watch rl reinforcement"), ctx)
+
+    with patch("watch_runner.run_one_watch", return_value=3) as mock_runner:
+        handle_update(_msg("42", "/watch_run rl"), ctx)
+    mock_runner.assert_called_once()
+    assert "推了 3 篇" in ctx._fake.sent[-1][1]
+
+
+def test_watch_run_unknown_name(tmp_db: Path, tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("bot.WATCH_DB_PATH", tmp_path / "w.sqlite")
+    ctx = _mk_ctx(tmp_db)
+    handle_update(_msg("42", "/watch_run ghost"), ctx)
+    assert "沒有這個" in ctx._fake.sent[0][1]
+
+
 from bot import run_loop
 
 
