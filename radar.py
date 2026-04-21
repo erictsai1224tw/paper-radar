@@ -164,24 +164,17 @@ def rank_by_interest(
         provider = os.environ.get("SUMMARIZER", "claude").lower()
     runner = _SUMMARIZER_RUNNERS.get(provider) or _run_claude_summarize
 
-    lines = []
-    for i, p in enumerate(papers, start=1):
-        tldr = (p.get("tldr") or "")[:160]
-        tags = ", ".join(p.get("tags") or [])
-        lines.append(f'{i}. [{p["arxiv_id"]}] "{p["title"]}" — {tldr} (tags: {tags})')
+    from prompts import format_paper_block
     prompt = INTEREST_RANK_PROMPT.format(
-        paper_block="\n".join(lines),
+        paper_block=format_paper_block(papers, tldr_limit=160),
         interest=interest.strip(),
         top_n=top_n,
     )
 
     try:
-        raw = runner(prompt).strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        data = json.loads(raw)
+        data = json.loads(_strip_json_fence(runner(prompt)))
         ordered = data.get("ordered_arxiv_ids") or []
-    except (subprocess.SubprocessError, json.JSONDecodeError, KeyError) as exc:
+    except (subprocess.SubprocessError, json.JSONDecodeError) as exc:
         logger.warning("rank_by_interest failed: %s — falling back to upvote order", exc)
         return papers[:top_n]
 
@@ -602,8 +595,7 @@ def main() -> int:
         interest = os.environ.get("INTEREST_PROMPT", "").strip()
         if interest:
             logger.info("ranking by interest (%d chars of prompt)", len(interest))
-            fresh = rank_by_interest(fresh, interest, top_n=TOP_N,
-                                     provider=os.environ.get("SUMMARIZER", "claude").lower())
+            fresh = rank_by_interest(fresh, interest, top_n=TOP_N)
         else:
             fresh = fresh[:TOP_N]
         logger.info("selected %d papers for today", len(fresh))

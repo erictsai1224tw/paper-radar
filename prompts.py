@@ -2,6 +2,22 @@
 
 from __future__ import annotations
 
+
+def format_paper_block(papers: list[dict], tldr_limit: int | None = None) -> str:
+    """Shared 「N. [arxiv_id] "title" — tldr (tags: ...)」 line format.
+
+    Used by rank_by_interest and the weekly-rollup cluster prompt. ``tldr_limit``
+    trims long tldrs for prompt-size control (rank_by_interest uses 160).
+    """
+    lines: list[str] = []
+    for i, p in enumerate(papers, start=1):
+        tldr = p.get("tldr", "") or ""
+        if tldr_limit is not None:
+            tldr = tldr[:tldr_limit]
+        tags = ", ".join(p.get("tags") or [])
+        lines.append(f'{i}. [{p["arxiv_id"]}] "{p["title"]}" — {tldr} (tags: {tags})')
+    return "\n".join(lines)
+
 SUMMARIZE_PROMPT = """你是 AI paper reviewer。把下面這篇 paper 用台灣口語繁體中文做結構化摘要。
 
 規則：

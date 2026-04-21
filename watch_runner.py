@@ -5,6 +5,7 @@ single watch via the bot's /watch_run command.
 """
 from __future__ import annotations
 
+import html as _h
 import logging
 import os
 import sys
@@ -14,6 +15,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 import paper_arxiv_search
+from paper_render import render_paper_card
 from telegram_client import send_message
 from watch_db import (
     get_seen_for_watch,
@@ -32,39 +34,15 @@ LOG_PATH = _MODULE_DIR / "radar.log"
 
 _MAX_RESULTS_PER_WATCH = 5
 _TG_DELAY = 1
+# arxiv asks for <= 1 req / 3s — sleep between watches so N watches don't 429.
+_INTER_WATCH_DELAY = 3
 
 
 def _render_result(idx: int, paper: dict) -> str:
-    """Minimal HTML rendering for a watched paper."""
-    import html as _h
-
-    title = _h.escape(paper.get("title", "").strip())
-    authors = paper.get("authors") or []
-    auth = ", ".join(_h.escape(a) for a in authors[:3])
-    if len(authors) > 3:
-        auth += " et al."
-    published = (paper.get("published") or "")[:10]
-    arxiv_id = paper["arxiv_id"]
-    url = _h.escape(paper.get("arxiv_url", f"https://arxiv.org/abs/{arxiv_id}"), quote=True)
-    abstract = (paper.get("abstract") or "")[:220]
-    if paper.get("abstract") and len(paper["abstract"]) > 220:
-        abstract = abstract.rstrip() + "…"
-    abstract = _h.escape(abstract)
-
-    parts = [f"<b>{idx}. {title}</b>"]
-    if auth:
-        parts.append(f"<i>{auth}</i>")
-    if published:
-        parts.append(f"📅 {published}")
-    if abstract:
-        parts.append("")
-        parts.append(abstract)
-    parts.append("")
-    parts.append(
-        f'<a href="{url}">{_h.escape(arxiv_id)}</a>  '
-        f'—  深入用 <code>介紹 {_h.escape(arxiv_id)}</code>'
-    )
-    return "\n".join(parts)
+    aid = paper["arxiv_id"]
+    return render_paper_card(idx, paper, ctas=[
+        f"深入用 <code>介紹 {_h.escape(aid)}</code>",
+    ])
 
 
 def run_one_watch(
@@ -78,8 +56,6 @@ def run_one_watch(
 
     Returns the number of new papers pushed. 0 on no new / API failure.
     """
-    import html as _h
-
     name = watch["name"]
     query = watch["query"]
 
@@ -118,10 +94,18 @@ def run_one_watch(
     return len(fresh)
 
 
-def run_all_watches(db_path: Path | str, token: str, chat_id: str) -> int:
-    """Iterate every watch; return total new papers pushed."""
+def run_all_watches(
+    db_path: Path | str,
+    token: str,
+    chat_id: str,
+    sleep_fn=time.sleep,
+) -> int:
+    """Iterate every watch; return total new papers pushed. Sleeps between watches
+    so concurrent arxiv calls don't exceed the 1 req / 3s guidance."""
     total = 0
-    for w in list_watches(db_path):
+    for i, w in enumerate(list_watches(db_path)):
+        if i > 0:
+            sleep_fn(_INTER_WATCH_DELAY)
         try:
             total += run_one_watch(w, db_path, token, chat_id)
         except Exception:

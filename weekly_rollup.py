@@ -15,7 +15,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from prompts import WEEKLY_CLUSTER_PROMPT
+from prompts import WEEKLY_CLUSTER_PROMPT, format_paper_block
 from telegram_client import send_message
 
 logger = logging.getLogger(__name__)
@@ -81,14 +81,7 @@ def _strip_json_fence(raw: str) -> str:
 
 
 def _build_cluster_prompt(papers: list[dict]) -> str:
-    lines = []
-    for i, p in enumerate(papers, 1):
-        tldr = p.get("tldr", "")
-        tags = ", ".join(p.get("tags", []))
-        lines.append(
-            f'{i}. [{p["arxiv_id"]}] "{p["title"]}" — {tldr} (tags: {tags})'
-        )
-    return WEEKLY_CLUSTER_PROMPT.format(paper_block="\n".join(lines))
+    return WEEKLY_CLUSTER_PROMPT.format(paper_block=format_paper_block(papers))
 
 
 def cluster_papers(papers: list[dict]) -> list[dict]:

@@ -144,6 +144,11 @@ class FakeContext:
 
 def _mk_ctx(tmp_db: Path, **overrides) -> Context:
     init_chat_db(tmp_db)
+    # Bot's main() initializes watch.sqlite once; unit tests bypass main
+    # so init it against whatever bot.WATCH_DB_PATH currently points to.
+    import bot as _bot
+    from watch_db import init_watch_db as _init_watch_db
+    _init_watch_db(_bot.WATCH_DB_PATH)
     fake = FakeContext()
 
     def send(chat_id, text):
@@ -856,7 +861,7 @@ def test_watch_run_fires_runner(tmp_db: Path, tmp_path: Path, monkeypatch):
     ctx = _mk_ctx(tmp_db)
     handle_update(_msg("42", "/watch rl reinforcement"), ctx)
 
-    with patch("watch_runner.run_one_watch", return_value=3) as mock_runner:
+    with patch("bot.run_one_watch", return_value=3) as mock_runner:
         handle_update(_msg("42", "/watch_run rl"), ctx)
     mock_runner.assert_called_once()
     assert "推了 3 篇" in ctx._fake.sent[-1][1]

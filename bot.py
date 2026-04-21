@@ -461,12 +461,19 @@ def _handle_command(chat_id: str, text: str, ctx: Context) -> None:
 
 # --- /watch family ---------------------------------------------------------
 
+import html as _h_watch
+from watch_db import (
+    get_watch,
+    init_watch_db,
+    list_watches,
+    remove_watch,
+    upsert_watch,
+)
+from watch_runner import run_one_watch
+
 
 def _handle_watch_add(chat_id: str, arg: str, ctx: Context) -> None:
     """/watch <name> <query> — save a persistent arxiv topic."""
-    import html as _h
-    from watch_db import init_watch_db, upsert_watch
-
     parts = arg.split(maxsplit=1)
     if len(parts) < 2:
         ctx.send_message(
@@ -477,21 +484,16 @@ def _handle_watch_add(chat_id: str, arg: str, ctx: Context) -> None:
         )
         return
     name, query = parts[0], parts[1].strip()
-    init_watch_db(WATCH_DB_PATH)
     created = upsert_watch(WATCH_DB_PATH, name, query)
     verb = "新增" if created else "更新"
     ctx.send_message(
         chat_id,
-        f"✅ {verb} watch <code>{_h.escape(name)}</code>: <code>{_h.escape(query)}</code>\n"
-        f"每天早上 08:00 自動跑一次；想馬上試就 <code>/watch_run {_h.escape(name)}</code>",
+        f"✅ {verb} watch <code>{_h_watch.escape(name)}</code>: <code>{_h_watch.escape(query)}</code>\n"
+        f"每天早上 08:00 自動跑一次；想馬上試就 <code>/watch_run {_h_watch.escape(name)}</code>",
     )
 
 
 def _handle_watches_list(chat_id: str, ctx: Context) -> None:
-    import html as _h
-    from watch_db import init_watch_db, list_watches
-
-    init_watch_db(WATCH_DB_PATH)
     rows = list_watches(WATCH_DB_PATH)
     if not rows:
         ctx.send_message(chat_id, "還沒有 watch。用 <code>/watch &lt;name&gt; &lt;query&gt;</code> 新增")
@@ -499,52 +501,47 @@ def _handle_watches_list(chat_id: str, ctx: Context) -> None:
     lines = ["<b>訂閱清單</b>"]
     for w in rows:
         lines.append(
-            f"• <code>{_h.escape(w['name'])}</code> — <code>{_h.escape(w['query'])}</code>"
+            f"• <code>{_h_watch.escape(w['name'])}</code> — <code>{_h_watch.escape(w['query'])}</code>"
         )
     ctx.send_message(chat_id, "\n".join(lines))
 
 
 def _handle_unwatch(chat_id: str, arg: str, ctx: Context) -> None:
-    import html as _h
-    from watch_db import init_watch_db, remove_watch
-
     name = arg.strip()
     if not name:
         ctx.send_message(chat_id, "用法：<code>/unwatch &lt;name&gt;</code>")
         return
-    init_watch_db(WATCH_DB_PATH)
     removed = remove_watch(WATCH_DB_PATH, name)
     if removed:
-        ctx.send_message(chat_id, f"🗑️ 已刪除 <code>{_h.escape(name)}</code>")
+        ctx.send_message(chat_id, f"🗑️ 已刪除 <code>{_h_watch.escape(name)}</code>")
     else:
-        ctx.send_message(chat_id, f"（沒有這個 watch：<code>{_h.escape(name)}</code>）")
+        ctx.send_message(chat_id, f"（沒有這個 watch：<code>{_h_watch.escape(name)}</code>）")
 
 
 def _handle_watch_run(chat_id: str, arg: str, ctx: Context) -> None:
-    import html as _h
-    from watch_db import get_watch, init_watch_db
-    from watch_runner import run_one_watch
-
     name = arg.strip()
     if not name:
         ctx.send_message(chat_id, "用法：<code>/watch_run &lt;name&gt;</code>")
         return
-    init_watch_db(WATCH_DB_PATH)
     watch = get_watch(WATCH_DB_PATH, name)
     if not watch:
-        ctx.send_message(chat_id, f"（沒有這個 watch：<code>{_h.escape(name)}</code>）")
+        ctx.send_message(chat_id, f"（沒有這個 watch：<code>{_h_watch.escape(name)}</code>）")
         return
     try:
         ctx.send_chat_action(chat_id, "typing")
-    except Exception:
-        pass
-    token = os.environ["TELEGRAM_NOTIFY_BOT_TOKEN"]
-    notify_chat = os.environ["TELEGRAM_NOTIFY_CHAT_ID"]
+    except Exception as exc:
+        logger.warning("send_chat_action failed: %s", exc)
+    try:
+        token = os.environ["TELEGRAM_NOTIFY_BOT_TOKEN"]
+        notify_chat = os.environ["TELEGRAM_NOTIFY_CHAT_ID"]
+    except KeyError as exc:
+        ctx.send_message(chat_id, f"（缺 env {exc}，notify bot 沒設好）")
+        return
     pushed = run_one_watch(watch, WATCH_DB_PATH, token, notify_chat)
     if pushed == 0:
-        ctx.send_message(chat_id, f"（<code>{_h.escape(name)}</code> 跑完但沒有新 paper）")
+        ctx.send_message(chat_id, f"（<code>{_h_watch.escape(name)}</code> 跑完但沒有新 paper）")
     else:
-        ctx.send_message(chat_id, f"✅ <code>{_h.escape(name)}</code> 推了 {pushed} 篇到 notify bot")
+        ctx.send_message(chat_id, f"✅ <code>{_h_watch.escape(name)}</code> 推了 {pushed} 篇到 notify bot")
 
 
 def _push_paper_list(chat_id: str, header: str, papers: list[dict], ctx: Context) -> None:
@@ -679,39 +676,18 @@ def _handle_refs(chat_id: str, arg: str, ctx: Context) -> None:
 
 
 _SEARCH_MAX_RESULTS = 5
-_SEARCH_ABSTRACT_SNIPPET = 260
 
 
 def _build_search_result_message(idx: int, paper: dict) -> str:
+    """Search / similar / refs result card — reuses paper_render with CTAs
+    pointing at the deeper Q&A and NotebookLM bundle commands."""
     import html as _h
-    title = _h.escape(paper["title"])
-    abstract_raw = paper.get("abstract") or ""
-    if len(abstract_raw) > _SEARCH_ABSTRACT_SNIPPET:
-        abstract_raw = abstract_raw[:_SEARCH_ABSTRACT_SNIPPET].rstrip() + "…"
-    abstract = _h.escape(abstract_raw)
-    authors = paper.get("authors") or []
-    auth_text = ", ".join(_h.escape(a) for a in authors[:3])
-    if len(authors) > 3:
-        auth_text += " et al."
-    published = (paper.get("published") or "")[:10]  # YYYY-MM-DD
-    arxiv_id = paper["arxiv_id"]
-    url = _h.escape(paper.get("arxiv_url", f"https://arxiv.org/abs/{arxiv_id}"), quote=True)
-
-    lines = [f"<b>{idx}. {title}</b>"]
-    if auth_text:
-        lines.append(f"<i>{auth_text}</i>")
-    if published:
-        lines.append(f"📅 {published}")
-    if abstract:
-        lines.append("")
-        lines.append(abstract)
-    lines.append("")
-    lines.append(
-        f'<a href="{url}">{_h.escape(arxiv_id)}</a>  '
-        f'—  深入用 <code>介紹 {_h.escape(arxiv_id)}</code>  '
-        f'或 <code>/notebook {_h.escape(arxiv_id)}</code>'
-    )
-    return "\n".join(lines)
+    from paper_render import render_paper_card
+    aid = paper["arxiv_id"]
+    return render_paper_card(idx, paper, ctas=[
+        f"深入用 <code>介紹 {_h.escape(aid)}</code>",
+        f"或 <code>/notebook {_h.escape(aid)}</code>",
+    ])
 
 
 def _handle_search(chat_id: str, query: str, ctx: Context) -> None:
@@ -982,6 +958,7 @@ def main() -> int:
     _configure_logging()
     logger.info("=== paper_radar bot starting ===")
     init_chat_db(BOT_DB_PATH)
+    init_watch_db(WATCH_DB_PATH)
     whitelist = load_whitelist()
     if not whitelist:
         logger.error("TELEGRAM_AUTHORIZED_CHAT_IDS unset — refusing to start")
