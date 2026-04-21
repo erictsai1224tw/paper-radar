@@ -8,6 +8,9 @@ papers_md/
 papers_fig/
 papers_voice/
 papers_archive.jsonl
+feedback.sqlite
+notify_bot.log
+notify_bot.offset
 .env
 __pycache__/
 *.pyc
