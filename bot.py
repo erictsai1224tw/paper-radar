@@ -456,6 +456,41 @@ def _push_paper_list(chat_id: str, header: str, papers: list[dict], ctx: Context
             logger.warning("paper send failed %s: %s", p.get("arxiv_id"), exc)
 
 
+def _summarize_papers_for_history(label: str, papers: list[dict]) -> str:
+    """Compact assistant-turn text so the bot sees prior command results in history.
+
+    Format:
+        [label]
+        1. <arxiv_id>  <title>
+        2. ...
+
+    So follow-up questions like 「介紹第 3 篇」 or 「2401.12345 講什麼」 hit
+    either detect_paper_index (via todays_papers — won't match here) or the
+    LLM reasoning over history + detect_arxiv_id on the user reply.
+    """
+    lines = [f"[{label}]"]
+    for i, p in enumerate(papers, start=1):
+        aid = p.get("arxiv_id", "?")
+        title = (p.get("title") or "").strip()
+        lines.append(f"{i}. {aid}  {title}")
+    return "\n".join(lines)
+
+
+def _log_command_to_history(
+    chat_id: str, user_cmd: str, assistant_summary: str, ctx: Context
+) -> None:
+    """Append a /command + its rendered summary as two chat_history turns.
+
+    Ensures follow-up free-form questions ('介紹這幾篇') see what the bot
+    just showed. Failures are non-fatal — persistence is best-effort.
+    """
+    try:
+        append_turn(ctx.db_path, chat_id, "user", user_cmd)
+        append_turn(ctx.db_path, chat_id, "assistant", assistant_summary)
+    except Exception as exc:
+        logger.warning("history log failed: %s", exc)
+
+
 def _handle_similar(chat_id: str, arg: str, ctx: Context) -> None:
     """/similar <paper ref> — Semantic Scholar recommendation neighbours."""
     if not arg.strip():
@@ -485,6 +520,12 @@ def _handle_similar(chat_id: str, arg: str, ctx: Context) -> None:
         return
     header = f"🔁 <b>與 <code>{_h.escape(aid)}</code> 相似的 paper</b> — {len(results)} 篇"
     _push_paper_list(chat_id, header, results, ctx)
+    _log_command_to_history(
+        chat_id,
+        f"/similar {aid}",
+        _summarize_papers_for_history(f"與 {aid} 相似的 paper", results),
+        ctx,
+    )
 
 
 def _handle_refs(chat_id: str, arg: str, ctx: Context) -> None:
@@ -523,6 +564,13 @@ def _handle_refs(chat_id: str, arg: str, ctx: Context) -> None:
             f"📎 <b>引用 <code>{_h.escape(aid)}</code> 的 paper</b> — {len(cites)} 篇"
         )
         _push_paper_list(chat_id, header, cites, ctx)
+
+    summary_parts: list[str] = []
+    if refs:
+        summary_parts.append(_summarize_papers_for_history(f"{aid} 引用的 paper", refs))
+    if cites:
+        summary_parts.append(_summarize_papers_for_history(f"引用 {aid} 的 paper", cites))
+    _log_command_to_history(chat_id, f"/refs {aid}", "\n\n".join(summary_parts), ctx)
 
 
 _SEARCH_MAX_RESULTS = 5
@@ -581,18 +629,14 @@ def _handle_search(chat_id: str, query: str, ctx: Context) -> None:
 
     import html as _h
     header = f"🔎 <b>arxiv 搜尋：</b><code>{_h.escape(query)}</code> — {len(results)} 篇最新"
-    try:
-        ctx.send_message(chat_id, header)
-    except Exception as exc:
-        logger.warning("search header failed: %s", exc)
-        return
+    _push_paper_list(chat_id, header, results, ctx)
 
-    for i, paper in enumerate(results, start=1):
-        msg = _build_search_result_message(i, paper)
-        try:
-            ctx.send_message(chat_id, msg)
-        except Exception as exc:
-            logger.warning("search result %s failed: %s", paper.get("arxiv_id"), exc)
+    _log_command_to_history(
+        chat_id,
+        f"/search {query}",
+        _summarize_papers_for_history(f'搜尋 "{query}" 的結果', results),
+        ctx,
+    )
 
 
 def _resolve_paper_ref(text: str, ctx: Context) -> str | None:
