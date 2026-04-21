@@ -144,6 +144,19 @@ def detect_paper_by_title(text: str, papers: list[dict]) -> str | None:
     return best_id
 
 
+_MD_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _sanitize_loaded_markdown(text: str) -> str:
+    """Strip C0 control chars that sometimes leak from markitdown's PDF path.
+
+    Primarily defends against embedded null bytes which make subprocess.run
+    reject the argv (ValueError: embedded null byte) when the fulltext gets
+    concatenated into the LLM prompt.
+    """
+    return _MD_CONTROL_CHAR_RE.sub("", text)
+
+
 def load_paper_markdown_by_id(
     arxiv_id: str, papers_md_dir: Path | str
 ) -> str | None:
@@ -152,7 +165,7 @@ def load_paper_markdown_by_id(
         return None
     path = Path(papers_md_dir) / f"{arxiv_id}.md"
     try:
-        return path.read_text(encoding="utf-8")
+        return _sanitize_loaded_markdown(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
 
@@ -179,7 +192,7 @@ def fetch_paper_markdown_on_demand(
     if path is None:
         return None
     try:
-        return path.read_text(encoding="utf-8")
+        return _sanitize_loaded_markdown(path.read_text(encoding="utf-8"))
     except OSError:
         return None
 

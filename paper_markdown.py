@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import tempfile
 from pathlib import Path
 
@@ -12,6 +13,16 @@ logger = logging.getLogger(__name__)
 
 _ARXIV_PDF_URL = "https://arxiv.org/pdf/{arxiv_id}"
 _DOWNLOAD_TIMEOUT = 60
+
+# markitdown's PDF converter occasionally leaks binary control bytes into its
+# text output — null bytes break subprocess argv (ValueError: embedded null
+# byte), other C0 control chars look like garbage in prompts. Strip everything
+# in \x00..\x1f except tab / LF / CR.
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _sanitize_markdown(text: str) -> str:
+    return _CONTROL_CHAR_RE.sub("", text)
 
 
 def fetch_pdf_as_markdown(arxiv_id: str, out_dir: Path | str) -> Path | None:
@@ -45,5 +56,5 @@ def fetch_pdf_as_markdown(arxiv_id: str, out_dir: Path | str) -> Path | None:
             logger.warning("markitdown conversion failed for %s: %s", arxiv_id, exc)
             return None
 
-    out_path.write_text(result.text_content, encoding="utf-8")
+    out_path.write_text(_sanitize_markdown(result.text_content), encoding="utf-8")
     return out_path
