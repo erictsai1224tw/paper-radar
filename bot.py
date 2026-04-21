@@ -157,6 +157,73 @@ def _sanitize_loaded_markdown(text: str) -> str:
     return _MD_CONTROL_CHAR_RE.sub("", text)
 
 
+# --- markdown → Telegram-HTML rendering -----------------------------------
+
+import html as _html
+
+_CODE_BLOCK_RE = re.compile(r"```(?:\w+)?\n?(.*?)```", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+_HEADER_RE = re.compile(r"^#{1,6}\s*(.+?)\s*$", re.MULTILINE)
+_BOLD_RE = re.compile(r"\*\*([^*\n]+?)\*\*")
+_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+# Math: strip the $ delimiters, keep content. LaTeX markup stays but beats "$$...$$"
+_DOLLAR_DISPLAY_RE = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
+_DOLLAR_INLINE_RE = re.compile(r"(?<!\\)\$([^$\n]{1,200})\$")
+_TABLE_SEP_RE = re.compile(r"^\|[\s\-|:]+\|\s*$", re.MULTILINE)
+
+
+def markdown_to_telegram_html(text: str) -> str:
+    """Convert a markdown reply into Telegram's ``parse_mode=HTML`` subset.
+
+    Supported: ``**bold**``, `` `code` ``, ``` ``` fence ```, ``# header``
+    (rendered as bold), ``[text](url)`` links. Markdown tables get their
+    separator rows stripped; LaTeX math has the $ delimiters removed and
+    content kept (so ``$\\alpha$`` → ``\\alpha``; the upstream prompt
+    already tells the LLM to prefer Unicode).
+    """
+    # Protect code spans first (no conversions inside them) via placeholders.
+    code_blocks: list[str] = []
+    def _stash_block(m: re.Match) -> str:
+        code_blocks.append(m.group(1).rstrip("\n"))
+        return f"\x00CB{len(code_blocks) - 1}\x00"
+    text = _CODE_BLOCK_RE.sub(_stash_block, text)
+
+    inline_codes: list[str] = []
+    def _stash_inline(m: re.Match) -> str:
+        inline_codes.append(m.group(1))
+        return f"\x00IC{len(inline_codes) - 1}\x00"
+    text = _INLINE_CODE_RE.sub(_stash_inline, text)
+
+    # HTML-escape the rest so user text never forges tags.
+    text = _html.escape(text)
+
+    # Drop table separator rows, they look like "|---|---|" walls otherwise.
+    text = _TABLE_SEP_RE.sub("", text)
+
+    # Headers → bold.
+    text = _HEADER_RE.sub(r"<b>\1</b>", text)
+    # Bold.
+    text = _BOLD_RE.sub(r"<b>\1</b>", text)
+    # Links.
+    text = _LINK_RE.sub(r'<a href="\2">\1</a>', text)
+    # Strip $ math delimiters (keep inner text).
+    text = _DOLLAR_DISPLAY_RE.sub(r"\1", text)
+    text = _DOLLAR_INLINE_RE.sub(r"\1", text)
+
+    # Restore code spans with escaped content.
+    for i, body in enumerate(code_blocks):
+        text = text.replace(
+            f"\x00CB{i}\x00",
+            f"<pre><code>{_html.escape(body)}</code></pre>",
+        )
+    for i, body in enumerate(inline_codes):
+        text = text.replace(
+            f"\x00IC{i}\x00",
+            f"<code>{_html.escape(body)}</code>",
+        )
+    return text
+
+
 def load_paper_markdown_by_id(
     arxiv_id: str, papers_md_dir: Path | str
 ) -> str | None:
@@ -302,12 +369,12 @@ class Context:
 
 
 _HELP_TEXT = (
-    "可用指令：\n"
-    "/help — 顯示這段\n"
-    "/reset — 清空對話歷史\n"
-    "/backend — 顯示目前預設 backend\n"
-    "/claude <q> — 這則強制用 claude\n"
-    "/gemini <q> — 這則強制用 gemini\n"
+    "<b>可用指令</b>\n"
+    "<code>/help</code> — 顯示這段\n"
+    "<code>/reset</code> — 清空對話歷史\n"
+    "<code>/backend</code> — 顯示目前預設 backend\n"
+    "<code>/claude &lt;q&gt;</code> — 這則強制用 claude\n"
+    "<code>/gemini &lt;q&gt;</code> — 這則強制用 gemini\n"
     "直接傳訊息：用預設 backend 回答，帶歷史"
 )
 
@@ -433,7 +500,8 @@ def _handle_free_form(chat_id: str, text: str, backend: str, ctx: Context) -> No
         append_turn(ctx.db_path, chat_id, "user", text)
         append_turn(ctx.db_path, chat_id, "assistant", reply)
 
-        for chunk in split_for_telegram(reply):
+        rendered = markdown_to_telegram_html(reply)
+        for chunk in split_for_telegram(rendered):
             try:
                 ctx.send_message(chat_id, chunk)
             except Exception as exc:
@@ -503,7 +571,7 @@ def _build_ctx() -> Context:
         default_backend=os.environ.get("BOT_BACKEND", "claude").lower(),
         history_turns=int(os.environ.get("BOT_HISTORY_TURNS", "10")),
         llm_timeout=int(os.environ.get("BOT_LLM_TIMEOUT", "120")),
-        send_message=lambda cid, txt: telegram_client.send_message(token, cid, txt),
+        send_message=lambda cid, txt: telegram_client.send_message(token, cid, txt, parse_mode="HTML"),
         send_chat_action=lambda cid, a: telegram_client.send_chat_action(token, cid, a),
         ask_llm=ask_llm,
         todays_papers=today_papers,
