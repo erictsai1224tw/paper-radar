@@ -24,6 +24,7 @@ from paper_markdown import fetch_pdf_as_markdown
 from paper_s2 import fetch_s2_metadata
 from prompts import (
     EXPLAIN_FIGURE_PROMPT,
+    INTEREST_RANK_PROMPT,
     NOTION_PUSH_PROMPT,
     SUMMARIZE_PROMPT,
     VOICE_OVERVIEW_PROMPT,
@@ -143,6 +144,55 @@ def dedup(papers: list[dict], db_path: Path | str, top_n: int = TOP_N) -> list[d
     seen = get_seen_ids(db_path)
     fresh = [p for p in papers if p["arxiv_id"] not in seen]
     return fresh[:top_n]
+
+
+def rank_by_interest(
+    papers: list[dict],
+    interest: str,
+    top_n: int,
+    provider: str | None = None,
+) -> list[dict]:
+    """Re-rank ``papers`` by how well they match ``interest`` via LLM.
+
+    Returns a subset of ``papers`` ordered by LLM preference (at most
+    ``top_n``). On any LLM failure or empty interest, returns the original
+    first ``top_n`` untouched — silently degrading to HF upvote order.
+    """
+    if not interest.strip() or not papers:
+        return papers[:top_n]
+    if provider is None:
+        provider = os.environ.get("SUMMARIZER", "claude").lower()
+    runner = _SUMMARIZER_RUNNERS.get(provider) or _run_claude_summarize
+
+    lines = []
+    for i, p in enumerate(papers, start=1):
+        tldr = (p.get("tldr") or "")[:160]
+        tags = ", ".join(p.get("tags") or [])
+        lines.append(f'{i}. [{p["arxiv_id"]}] "{p["title"]}" — {tldr} (tags: {tags})')
+    prompt = INTEREST_RANK_PROMPT.format(
+        paper_block="\n".join(lines),
+        interest=interest.strip(),
+        top_n=top_n,
+    )
+
+    try:
+        raw = runner(prompt).strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        data = json.loads(raw)
+        ordered = data.get("ordered_arxiv_ids") or []
+    except (subprocess.SubprocessError, json.JSONDecodeError, KeyError) as exc:
+        logger.warning("rank_by_interest failed: %s — falling back to upvote order", exc)
+        return papers[:top_n]
+
+    by_id = {p["arxiv_id"]: p for p in papers}
+    picked: list[dict] = []
+    for aid in ordered:
+        if aid in by_id and by_id[aid] not in picked:
+            picked.append(by_id[aid])
+    if not picked:
+        return papers[:top_n]
+    return picked[:top_n]
 
 
 def _strip_json_fence(raw: str) -> str:
@@ -542,11 +592,21 @@ def main() -> int:
         papers = fetch_papers()
         logger.info("fetched %d papers", len(papers))
 
-        fresh = dedup(papers, db_path, top_n=TOP_N)
-        logger.info("after dedup: %d fresh papers", len(fresh))
+        # Dedup without the TOP_N cap — we may still filter further by interest.
+        fresh = dedup(papers, db_path, top_n=len(papers))
+        logger.info("after dedup: %d fresh candidates", len(fresh))
         if not fresh:
             logger.info("nothing new today — exit")
             return 0
+
+        interest = os.environ.get("INTEREST_PROMPT", "").strip()
+        if interest:
+            logger.info("ranking by interest (%d chars of prompt)", len(interest))
+            fresh = rank_by_interest(fresh, interest, top_n=TOP_N,
+                                     provider=os.environ.get("SUMMARIZER", "claude").lower())
+        else:
+            fresh = fresh[:TOP_N]
+        logger.info("selected %d papers for today", len(fresh))
 
         fresh = _maybe_rerank(fresh)
 

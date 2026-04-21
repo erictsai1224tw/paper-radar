@@ -11,6 +11,7 @@ papers_archive.jsonl
 feedback.sqlite
 notify_bot.log
 notify_bot.offset
+watch.sqlite
 .env
 __pycache__/
 *.pyc

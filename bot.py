@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 _MODULE_DIR = Path(__file__).resolve().parent
 BOT_DB_PATH = _MODULE_DIR / "bot.sqlite"
+WATCH_DB_PATH = _MODULE_DIR / "watch.sqlite"
 ENV_PATH = _MODULE_DIR / ".env"
 LOG_PATH = _MODULE_DIR / "bot.log"
 SUMMARIES_PATH = _MODULE_DIR / "summaries.json"
@@ -379,6 +380,10 @@ _HELP_TEXT = (
     "<code>/search &lt;query&gt;</code> — arxiv 搜尋某領域最新 5 篇\n"
     "<code>/similar &lt;paper&gt;</code> — 列出語意相似的 paper（S2 推薦）\n"
     "<code>/refs &lt;paper&gt;</code> — 引用 / 被引用清單（S2 citation graph）\n"
+    "<code>/watch &lt;name&gt; &lt;query&gt;</code> — 新增訂閱，每天早上推新 paper\n"
+    "<code>/watches</code> — 列出所有訂閱\n"
+    "<code>/unwatch &lt;name&gt;</code> — 刪掉訂閱\n"
+    "<code>/watch_run &lt;name&gt;</code> — 馬上跑一次指定訂閱\n"
     "<code>/notebook &lt;paper&gt;</code> — 拿 NotebookLM 用的 URL + markdown 檔\n"
     "直接傳訊息：用預設 backend 回答，帶歷史"
 )
@@ -438,8 +443,108 @@ def _handle_command(chat_id: str, text: str, ctx: Context) -> None:
     if cmd == "/refs":
         _handle_refs(chat_id, arg, ctx)
         return
+    if cmd == "/watch":
+        _handle_watch_add(chat_id, arg, ctx)
+        return
+    if cmd == "/watches":
+        _handle_watches_list(chat_id, ctx)
+        return
+    if cmd == "/unwatch":
+        _handle_unwatch(chat_id, arg, ctx)
+        return
+    if cmd == "/watch_run":
+        _handle_watch_run(chat_id, arg, ctx)
+        return
 
     ctx.send_message(chat_id, f"未知指令：{cmd}\n{_HELP_TEXT}")
+
+
+# --- /watch family ---------------------------------------------------------
+
+
+def _handle_watch_add(chat_id: str, arg: str, ctx: Context) -> None:
+    """/watch <name> <query> — save a persistent arxiv topic."""
+    import html as _h
+    from watch_db import init_watch_db, upsert_watch
+
+    parts = arg.split(maxsplit=1)
+    if len(parts) < 2:
+        ctx.send_message(
+            chat_id,
+            "用法：<code>/watch rl-dialogue reinforcement learning AND dialogue</code>\n"
+            "• 第一個 token 當名字（沒空白）\n"
+            "• 後面全部當 arxiv 搜尋 query",
+        )
+        return
+    name, query = parts[0], parts[1].strip()
+    init_watch_db(WATCH_DB_PATH)
+    created = upsert_watch(WATCH_DB_PATH, name, query)
+    verb = "新增" if created else "更新"
+    ctx.send_message(
+        chat_id,
+        f"✅ {verb} watch <code>{_h.escape(name)}</code>: <code>{_h.escape(query)}</code>\n"
+        f"每天早上 08:00 自動跑一次；想馬上試就 <code>/watch_run {_h.escape(name)}</code>",
+    )
+
+
+def _handle_watches_list(chat_id: str, ctx: Context) -> None:
+    import html as _h
+    from watch_db import init_watch_db, list_watches
+
+    init_watch_db(WATCH_DB_PATH)
+    rows = list_watches(WATCH_DB_PATH)
+    if not rows:
+        ctx.send_message(chat_id, "還沒有 watch。用 <code>/watch &lt;name&gt; &lt;query&gt;</code> 新增")
+        return
+    lines = ["<b>訂閱清單</b>"]
+    for w in rows:
+        lines.append(
+            f"• <code>{_h.escape(w['name'])}</code> — <code>{_h.escape(w['query'])}</code>"
+        )
+    ctx.send_message(chat_id, "\n".join(lines))
+
+
+def _handle_unwatch(chat_id: str, arg: str, ctx: Context) -> None:
+    import html as _h
+    from watch_db import init_watch_db, remove_watch
+
+    name = arg.strip()
+    if not name:
+        ctx.send_message(chat_id, "用法：<code>/unwatch &lt;name&gt;</code>")
+        return
+    init_watch_db(WATCH_DB_PATH)
+    removed = remove_watch(WATCH_DB_PATH, name)
+    if removed:
+        ctx.send_message(chat_id, f"🗑️ 已刪除 <code>{_h.escape(name)}</code>")
+    else:
+        ctx.send_message(chat_id, f"（沒有這個 watch：<code>{_h.escape(name)}</code>）")
+
+
+def _handle_watch_run(chat_id: str, arg: str, ctx: Context) -> None:
+    import html as _h
+    from watch_db import get_watch, init_watch_db
+    from watch_runner import run_one_watch
+
+    name = arg.strip()
+    if not name:
+        ctx.send_message(chat_id, "用法：<code>/watch_run &lt;name&gt;</code>")
+        return
+    init_watch_db(WATCH_DB_PATH)
+    watch = get_watch(WATCH_DB_PATH, name)
+    if not watch:
+        ctx.send_message(chat_id, f"（沒有這個 watch：<code>{_h.escape(name)}</code>）")
+        return
+    try:
+        ctx.send_chat_action(chat_id, "typing")
+    except Exception:
+        pass
+    token = os.environ["TELEGRAM_NOTIFY_BOT_TOKEN"]
+    notify_chat = os.environ["TELEGRAM_NOTIFY_CHAT_ID"]
+    pushed = run_one_watch(watch, WATCH_DB_PATH, token, notify_chat)
+    if pushed == 0:
+        ctx.send_message(chat_id, f"（<code>{_h.escape(name)}</code> 跑完但沒有新 paper）")
+    else:
+        ctx.send_message(chat_id, f"✅ <code>{_h.escape(name)}</code> 推了 {pushed} 篇到 notify bot")
 
 
 def _push_paper_list(chat_id: str, header: str, papers: list[dict], ctx: Context) -> None:

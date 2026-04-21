@@ -9,3 +9,6 @@ PYTHONPATH=/app
 
 # Weekly rollup — Sunday 09:00 Asia/Taipei
 0 9 * * 0 /venv/bin/python -m agents.paper_radar.weekly_rollup
+
+# Topic watches — every morning 08:00 Asia/Taipei
+0 8 * * * /venv/bin/python -m agents.paper_radar.watch_runner
