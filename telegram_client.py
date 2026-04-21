@@ -13,6 +13,7 @@ def send_message(
     text: str,
     parse_mode: str | None = None,
     disable_preview: bool = True,
+    reply_markup: dict | None = None,
 ) -> None:
     payload: dict = {
         "chat_id": chat_id,
@@ -21,8 +22,25 @@ def send_message(
     }
     if parse_mode:
         payload["parse_mode"] = parse_mode
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
     resp = requests.post(
         _API.format(token=token, method="sendMessage"),
+        json=payload,
+        timeout=_DEFAULT_TIMEOUT,
+    )
+    resp.raise_for_status()
+
+
+def answer_callback_query(
+    token: str, callback_query_id: str, text: str = ""
+) -> None:
+    """ACK a callback_query so the spinning button indicator stops on the user's client."""
+    payload: dict = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text[:200]  # Telegram limit
+    resp = requests.post(
+        _API.format(token=token, method="answerCallbackQuery"),
         json=payload,
         timeout=_DEFAULT_TIMEOUT,
     )

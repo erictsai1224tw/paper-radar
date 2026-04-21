@@ -144,3 +144,36 @@ def test_send_audio_omits_empty_title_and_performer(tmp_path):
         send_audio("tok", "42", str(mp3))
     data = mock_post.call_args.kwargs["data"]
     assert data == {"chat_id": "42"}
+
+
+from telegram_client import answer_callback_query
+
+
+def test_send_message_includes_reply_markup():
+    markup = {"inline_keyboard": [[{"text": "👍", "callback_data": "x"}]]}
+    with patch("telegram_client.requests.post") as mock_post:
+        mock_post.return_value = _mock_resp()
+        send_message("tok", "1", "hi", reply_markup=markup)
+    assert mock_post.call_args.kwargs["json"]["reply_markup"] == markup
+
+
+def test_send_message_omits_reply_markup_when_none():
+    with patch("telegram_client.requests.post") as mock_post:
+        mock_post.return_value = _mock_resp()
+        send_message("tok", "1", "hi")
+    assert "reply_markup" not in mock_post.call_args.kwargs["json"]
+
+
+def test_answer_callback_query_posts_id_and_text():
+    with patch("telegram_client.requests.post") as mock_post:
+        mock_post.return_value = _mock_resp()
+        answer_callback_query("tok", "cbq1", "ack text")
+    assert mock_post.call_args.args[0] == "https://api.telegram.org/bottok/answerCallbackQuery"
+    assert mock_post.call_args.kwargs["json"] == {"callback_query_id": "cbq1", "text": "ack text"}
+
+
+def test_answer_callback_query_omits_empty_text():
+    with patch("telegram_client.requests.post") as mock_post:
+        mock_post.return_value = _mock_resp()
+        answer_callback_query("tok", "cbq1")
+    assert mock_post.call_args.kwargs["json"] == {"callback_query_id": "cbq1"}

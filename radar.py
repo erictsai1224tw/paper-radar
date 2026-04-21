@@ -43,6 +43,7 @@ GEMINI_MODEL = "gemini-3-flash-preview"
 LLM_TIMEOUT = 120  # seconds per paper (applies to claude & gemini)
 CLAUDE_TIMEOUT = LLM_TIMEOUT  # kept for push_to_notion backward compat
 DB_PATH = _MODULE_DIR / "db.sqlite"
+FEEDBACK_DB_PATH = _MODULE_DIR / "feedback.sqlite"
 SUMMARIES_PATH = _MODULE_DIR / "summaries.json"
 PAPERS_MD_DIR = _MODULE_DIR / "papers_md"
 PAPERS_FIG_DIR = _MODULE_DIR / "papers_fig"
@@ -380,6 +381,17 @@ def _build_paper_message(idx: int, paper: dict) -> str:
     return "\n".join(parts)
 
 
+def _build_feedback_keyboard(arxiv_id: str) -> dict:
+    """Inline keyboard with 👍/👎/🔖 buttons for a single paper."""
+    return {
+        "inline_keyboard": [[
+            {"text": "👍", "callback_data": f"fb:{arxiv_id}:like"},
+            {"text": "👎", "callback_data": f"fb:{arxiv_id}:dislike"},
+            {"text": "🔖", "callback_data": f"fb:{arxiv_id}:save"},
+        ]]
+    }
+
+
 def notify_telegram(
     papers: list[dict],
     notion_url: str,
@@ -411,7 +423,11 @@ def notify_telegram(
     for i, paper in enumerate(papers, start=1):
         time.sleep(_TELEGRAM_MSG_DELAY)
         try:
-            _tg_send(bot_token, chat_id, _build_paper_message(i, paper), parse_mode="HTML")
+            _tg_send(
+                bot_token, chat_id, _build_paper_message(i, paper),
+                parse_mode="HTML",
+                reply_markup=_build_feedback_keyboard(paper["arxiv_id"]),
+            )
         except Exception as exc:
             logger.warning("notify_telegram paper %s failed: %s", paper.get("arxiv_id"), exc)
 
@@ -433,6 +449,47 @@ def notify_telegram(
         )
     except Exception as exc:
         logger.warning("notify_telegram notion link failed: %s", exc)
+
+
+def _load_archive_tag_lookup() -> dict[str, list[str]]:
+    """Build arxiv_id → tags[] from papers_archive.jsonl for rerank training."""
+    import json as _json
+
+    from weekly_rollup import ARCHIVE_PATH
+    if not ARCHIVE_PATH.exists():
+        return {}
+    lookup: dict[str, list[str]] = {}
+    with ARCHIVE_PATH.open(encoding="utf-8") as fp:
+        for line in fp:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                p = _json.loads(line)
+            except _json.JSONDecodeError:
+                continue
+            aid = p.get("arxiv_id")
+            if aid:
+                lookup[aid] = p.get("tags", []) or []
+    return lookup
+
+
+def _maybe_rerank(fresh: list[dict]) -> list[dict]:
+    """Re-order ``fresh`` by predicted preference when enough feedback exists."""
+    from rerank import rerank_by_preference_with_archive
+
+    min_samples = int(os.environ.get("FEEDBACK_RERANK_MIN_SAMPLES", "20"))
+    archive_lookup = _load_archive_tag_lookup()
+    reranked = rerank_by_preference_with_archive(
+        fresh, FEEDBACK_DB_PATH, archive_lookup, min_samples=min_samples,
+    )
+    if [p["arxiv_id"] for p in reranked] != [p["arxiv_id"] for p in fresh]:
+        logger.info(
+            "rerank: applied (%s → %s)",
+            [p["arxiv_id"] for p in fresh],
+            [p["arxiv_id"] for p in reranked],
+        )
+    return reranked
 
 
 def _maybe_send_voice_overview(summaries: list[dict], provider: str) -> None:
@@ -490,6 +547,8 @@ def main() -> int:
         if not fresh:
             logger.info("nothing new today — exit")
             return 0
+
+        fresh = _maybe_rerank(fresh)
 
         provider = os.environ.get("SUMMARIZER", "claude").lower()
         logger.info("summarizing with %s", provider)
